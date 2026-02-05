@@ -17,3 +17,4 @@
 - Fixed duplicate re-exports in `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer/src/lib.rs` after running `cargo check`.
 - Updated PyO3 bindings for pyo3 0.28 API changes (Bound types, unsendable classes, `Py<PyAny>` returns) to compile in `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer-py/src/lib.rs`.
 - Merged the intermediate backend crate into `cynthionwhisperer` and removed the extra crate, keeping only `cynthionwhisperer` and `cynthionwhisperer-py` in the workspace.
+- Added `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer-py/build.rs` to force `-Wl,-undefined,dynamic_lookup` on macOS so Python symbols resolve at runtime.

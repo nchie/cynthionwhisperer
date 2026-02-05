@@ -4,3 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = { version = "1.0.79", features = ["backtrace"] }
+async-lock = "3.4.1"
+async-trait = "0.1.89"
+bitfield = "0.14.0"
+crc = "3.2.1"
+futures-channel = "0.3.21"
+futures-lite = "2.0.1"
+futures-util = "0.3.21"
+merge = "0.1.0"
+nusb = { version = "0.2.0", features = ["smol"] }
+num_enum = "0.7.2"
+once_cell = "1.19.0"
+portable_async_sleep = { version = "0.1.1", default-features = false }

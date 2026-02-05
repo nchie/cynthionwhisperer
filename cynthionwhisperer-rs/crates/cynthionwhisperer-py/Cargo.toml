@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [lib]
+name = "cynthionwhisperer"
 crate-type = ["cdylib"]
 
 [dependencies]
 cynthionwhisperer = { path = "../cynthionwhisperer" }
-pyo3 = { version = "0.28" }
+futures-lite = "2.0.1"
+pyo3 = { version = "0.28", features = ["extension-module"] }

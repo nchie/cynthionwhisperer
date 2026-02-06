@@ -13,6 +13,16 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
+# Python artifacts
+**/.venv/
+**/__pycache__/
+**/.pycache/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

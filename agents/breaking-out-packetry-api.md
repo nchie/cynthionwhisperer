@@ -18,3 +18,9 @@
 - Updated PyO3 bindings for pyo3 0.28 API changes (Bound types, unsendable classes, `Py<PyAny>` returns) to compile in `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer-py/src/lib.rs`.
 - Merged the intermediate backend crate into `cynthionwhisperer` and removed the extra crate, keeping only `cynthionwhisperer` and `cynthionwhisperer-py` in the workspace.
 - Added `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer-py/build.rs` to force `-Wl,-undefined,dynamic_lookup` on macOS so Python symbols resolve at runtime.
+- Added sibling Python project `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-example` with:
+- - `pyproject.toml` and package scaffolding under `src/cynthionwhisperer_python`.
+- - `scripts/dev_setup.sh` to create a venv, install `maturin`, build/install the local PyO3 extension, and install the app.
+- - CLI entrypoint `cynthionwhisperer-capture` that opens the analyzer and prints captured packets/events.
+- Renamed the Python example project directory from `cynthionwhisperer-python` to `cynthionwhisperer-example` and updated internal references in `README.md`, `pyproject.toml`, and `scripts/dev_setup.sh`.
+- Updated root `.gitignore` to ignore Python virtualenv/cache/build artifacts generically across subprojects.

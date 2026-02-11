@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cynthion-analyzer-gateware"
+version = "0.1.0"
+description = "Standalone Cynthion USB analyzer gateware build package"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "amaranth~=0.5",
+  "apollo-fpga~=1.1",
+  "luna-usb~=0.2.2",
+]
+
+[tool.setuptools]
+include-package-data = true
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"cynthion" = ["shared/*.toml"]

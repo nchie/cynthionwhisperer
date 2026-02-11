@@ -28,7 +28,7 @@ impl Cynthion {
         let stream = self
             .inner
             .start_capture(speed)
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+            .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))?;
         Ok(Capture {
             inner: Some(stream),
         })
@@ -37,7 +37,7 @@ impl Cynthion {
     fn trigger_caps(&self, py: Python<'_>) -> PyResult<(u8, u8, u16)> {
         let caps = py
             .detach(|| block_on(self.inner.trigger_caps()))
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+            .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))?;
         Ok((
             caps.max_stages,
             caps.max_pattern_len,
@@ -59,7 +59,7 @@ impl Cynthion {
             stage_count,
         };
         py.detach(|| block_on(self.inner.set_trigger_control(control)))
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+            .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))
     }
 
     #[pyo3(signature = (stage_index, offset, pattern, mask=None, length=None))]
@@ -105,23 +105,23 @@ impl Cynthion {
             mask,
         };
         py.detach(|| block_on(self.inner.set_trigger_stage(stage_index, &stage)))
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+            .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))
     }
 
     fn arm_trigger(&mut self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| block_on(self.inner.arm_trigger()))
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+            .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))
     }
 
     fn disarm_trigger(&mut self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| block_on(self.inner.disarm_trigger()))
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+            .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))
     }
 
     fn trigger_status(&self, py: Python<'_>) -> PyResult<(bool, bool, bool, bool, u8, u16, u8)> {
         let status = py
             .detach(|| block_on(self.inner.trigger_status()))
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+            .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))?;
         Ok((
             status.enable,
             status.armed,
@@ -140,7 +140,7 @@ impl Cynthion {
     ) -> PyResult<(u16, u8, Vec<u8>, Vec<u8>)> {
         let stage = py
             .detach(|| block_on(self.inner.get_trigger_stage(stage_index)))
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+            .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))?;
         Ok((stage.offset, stage.length, stage.pattern, stage.mask))
     }
 }
@@ -169,7 +169,7 @@ impl Capture {
             match next {
                 CapturePoll::Event(Ok(event)) => return event_to_pyobject(py, event).map(Some),
                 CapturePoll::Event(Err(err)) => {
-                    return Err(PyRuntimeError::new_err(err.to_string()));
+                    return Err(PyRuntimeError::new_err(format!("{err:#}")));
                 }
                 CapturePoll::Timeout => continue,
                 CapturePoll::Ended => {
@@ -183,7 +183,7 @@ impl Capture {
     fn stop(&mut self, py: Python<'_>) -> PyResult<()> {
         if let Some(stream) = self.inner.take() {
             py.detach(|| stream.stop())
-                .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+                .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))?;
         }
         Ok(())
     }
@@ -264,7 +264,7 @@ impl Capture {
 
                     if let Some(stream) = slf.inner.take() {
                         py.detach(|| stream.stop())
-                            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+                            .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))?;
                     }
 
                     let packet = Packet {
@@ -274,7 +274,7 @@ impl Capture {
                     return Py::new(py, packet).map(|obj| Some(obj.into_any()));
                 }
                 CapturePoll::Event(Err(err)) => {
-                    return Err(PyRuntimeError::new_err(err.to_string()));
+                    return Err(PyRuntimeError::new_err(format!("{err:#}")));
                 }
             }
         }

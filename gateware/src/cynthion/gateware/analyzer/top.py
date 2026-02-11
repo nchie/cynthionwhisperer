@@ -369,28 +369,22 @@ class USBAnalyzerVendorRequestHandler(ControlRequestHandler):
                                 m.d.usb += control_flags.eq(interface.rx.payload)
                             with m.Case(1):
                                 m.d.usb += control_stage_count.eq(interface.rx.payload)
-                        with m.If(rx_count < TRIGGER_STAGE_PAYLOAD_LEN):
+                        with m.If(rx_count < TRIGGER_CONTROL_PAYLOAD_LEN):
                             m.d.usb += rx_count.eq(rx_count + 1)
 
                     with m.If(interface.rx_ready_for_response):
-                        with m.If(rx_count >= TRIGGER_CONTROL_PAYLOAD_LEN):
-                            m.d.comb += interface.handshakes_out.ack.eq(1)
-                            m.d.usb += [
-                                self.trigger.enable.eq(control_flags[0]),
-                                self.trigger.output_enable.eq(control_flags[1]),
-                                self.trigger.stage_count.eq(stage_count_clamped),
-                            ]
-                            with m.If(~control_flags[0]):
-                                m.d.usb += self.trigger.armed.eq(0)
-                                m.d.comb += self.trigger.disarm_strobe.eq(1)
-                        with m.Else():
-                            m.d.comb += interface.handshakes_out.stall.eq(1)
+                        m.d.comb += interface.handshakes_out.ack.eq(1)
+                        m.d.usb += [
+                            self.trigger.enable.eq(control_flags[0]),
+                            self.trigger.output_enable.eq(control_flags[1]),
+                            self.trigger.stage_count.eq(stage_count_clamped),
+                        ]
+                        with m.If(~control_flags[0]):
+                            m.d.usb += self.trigger.armed.eq(0)
+                            m.d.comb += self.trigger.disarm_strobe.eq(1)
 
                     with m.If(interface.status_requested):
-                        with m.If(rx_count >= TRIGGER_CONTROL_PAYLOAD_LEN):
-                            m.d.comb += self.send_zlp()
-                        with m.Else():
-                            m.d.comb += interface.handshakes_out.stall.eq(1)
+                        m.d.comb += self.send_zlp()
                         m.next = 'IDLE'
 
                 # SET_TRIGGER_STAGE -- Configure one trigger stage.
@@ -436,13 +430,13 @@ class USBAnalyzerVendorRequestHandler(ControlRequestHandler):
                             m.d.usb += rx_count.eq(rx_count + 1)
 
                     with m.If(interface.rx_ready_for_response):
-                        with m.If(valid_stage_index & (rx_count >= TRIGGER_STAGE_PAYLOAD_LEN)):
+                        with m.If(valid_stage_index):
                             m.d.comb += interface.handshakes_out.ack.eq(1)
                         with m.Else():
                             m.d.comb += interface.handshakes_out.stall.eq(1)
 
                     with m.If(interface.status_requested):
-                        with m.If(valid_stage_index & (rx_count >= TRIGGER_STAGE_PAYLOAD_LEN)):
+                        with m.If(valid_stage_index):
                             m.d.comb += self.send_zlp()
                         with m.Else():
                             m.d.comb += interface.handshakes_out.stall.eq(1)

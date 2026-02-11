@@ -459,7 +459,12 @@ impl CynthionInner {
         self.interface
             .control_out(control, timeout)
             .await
-            .context("Write request failed")?;
+            .with_context(|| {
+                format!(
+                    "Write request failed (request={request}, value={value}, len={})",
+                    data.len()
+                )
+            })?;
         Ok(())
     }
 
@@ -482,7 +487,9 @@ impl CynthionInner {
             .interface
             .control_in(control, timeout)
             .await
-            .context("Read request failed")?;
+            .with_context(|| {
+                format!("Read request failed (request={request}, value={value}, len={length})")
+            })?;
         Ok(buf.to_vec())
     }
 }

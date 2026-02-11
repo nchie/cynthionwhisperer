@@ -6,6 +6,7 @@ use std::num::NonZeroU32;
 use std::ops::DerefMut;
 use std::time::Duration;
 use std::sync::{mpsc, Arc};
+use std::sync::mpsc::RecvTimeoutError;
 
 use anyhow::{Context as ErrorContext, Error, bail};
 use async_lock::Mutex;
@@ -31,6 +32,7 @@ use super::{
     EventType,
     EventIterator,
     EventResult,
+    EventPoll,
     PowerConfig,
     TimestampedEvent,
     TransferQueue,
@@ -468,7 +470,26 @@ async fn read_byte(interface: &Interface, request: u8) -> Result<u8, Error> {
 }
 
 
-impl EventIterator for CynthionStream {}
+enum WaitResult {
+    Received,
+    Timeout,
+    Ended,
+}
+
+impl EventIterator for CynthionStream {
+    fn poll_next(&mut self, timeout: Duration) -> EventPoll {
+        loop {
+            match self.next_buffered_event() {
+                Some(event) => return EventPoll::Event(Ok(event)),
+                None => match self.wait_for_next_buffer(Some(timeout)) {
+                    WaitResult::Received => continue,
+                    WaitResult::Timeout => return EventPoll::Timeout,
+                    WaitResult::Ended => return EventPoll::Ended,
+                },
+            }
+        }
+    }
+}
 
 impl Iterator for CynthionStream {
     type Item = EventResult;
@@ -479,22 +500,39 @@ impl Iterator for CynthionStream {
                 // Yes; return the event.
                 Some(event) => return Some(Ok(event)),
                 // No; wait for more data from the capture thread.
-                None => match self.data_rx.recv().ok() {
-                    // Received more data; add it to the buffer and retry.
-                    Some(buffer) => {
-                        self.buffer.extend(buffer.iter());
-                        // Buffer can now be reused.
-                        let _ = self.reuse_tx.send(buffer);
-                    },
-                    // Capture has ended, there are no more packets.
-                    None => return None
-                }
+                None => match self.wait_for_next_buffer(None) {
+                    WaitResult::Received => continue,
+                    WaitResult::Timeout => continue,
+                    WaitResult::Ended => return None,
+                },
             }
         }
     }
 }
 
 impl CynthionStream {
+    fn wait_for_next_buffer(&mut self, timeout: Option<Duration>) -> WaitResult {
+        let recv_result = match timeout {
+            Some(timeout) => match self.data_rx.recv_timeout(timeout) {
+                Ok(buffer) => Ok(buffer),
+                Err(RecvTimeoutError::Timeout) => return WaitResult::Timeout,
+                Err(RecvTimeoutError::Disconnected) => return WaitResult::Ended,
+            },
+            None => self.data_rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+
+        match recv_result {
+            Ok(buffer) => {
+                self.buffer.extend(buffer.iter());
+                // Buffer can now be reused.
+                let _ = self.reuse_tx.send(buffer);
+                WaitResult::Received
+            }
+            Err(RecvTimeoutError::Timeout) => WaitResult::Timeout,
+            Err(RecvTimeoutError::Disconnected) => WaitResult::Ended,
+        }
+    }
+
     fn next_buffered_event(&mut self) -> Option<TimestampedEvent> {
         use TimestampedEvent::*;
 

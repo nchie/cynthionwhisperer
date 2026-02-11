@@ -5,7 +5,8 @@ use pyo3::types::{PyAny, PyBytes, PyType};
 use pyo3::{Bound, Py};
 
 use ::cynthionwhisperer as cw;
-use cw::{CaptureStream, Speed, TimestampedEvent};
+use cw::{CapturePoll, CaptureStream, PID, Speed, TimestampedEvent};
+use std::time::Duration;
 
 #[pyclass(unsendable)]
 struct Cynthion {
@@ -44,27 +45,120 @@ impl Capture {
     }
 
     fn __next__(mut slf: PyRefMut<Self>, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let Some(stream) = slf.inner.as_mut() else {
-            return Ok(None);
-        };
-        let next = stream.next();
-        match next {
-            Some(Ok(event)) => event_to_pyobject(py, event).map(Some),
-            Some(Err(err)) => Err(PyRuntimeError::new_err(err.to_string())),
-            None => {
-                slf.inner.take();
-                Ok(None)
+        loop {
+            py.check_signals()?;
+            let next = {
+                let Some(stream) = slf.inner.as_mut() else {
+                    return Ok(None);
+                };
+                py.detach(|| stream.poll_next(Duration::from_millis(100)))
+            };
+            py.check_signals()?;
+            match next {
+                CapturePoll::Event(Ok(event)) => return event_to_pyobject(py, event).map(Some),
+                CapturePoll::Event(Err(err)) => return Err(PyRuntimeError::new_err(err.to_string())),
+                CapturePoll::Timeout => continue,
+                CapturePoll::Ended => {
+                    slf.inner.take();
+                    return Ok(None);
+                }
             }
         }
     }
 
-    fn stop(&mut self) -> PyResult<()> {
+    fn stop(&mut self, py: Python<'_>) -> PyResult<()> {
         if let Some(stream) = self.inner.take() {
-            stream
-                .stop()
+            py.detach(|| stream.stop())
                 .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
         }
         Ok(())
+    }
+
+    #[pyo3(signature = (direction, pattern, data_pid=None))]
+    fn capture_until(
+        mut slf: PyRefMut<Self>,
+        py: Python<'_>,
+        direction: &str,
+        pattern: &Bound<'_, PyAny>,
+        data_pid: Option<&str>,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        let direction = parse_direction(direction)?;
+        let pattern = pattern.extract::<Vec<u8>>().map_err(|_| {
+            PyTypeError::new_err("pattern must be bytes-like (e.g. b\"\\x20\")")
+        })?;
+        let data_pid = data_pid.map(parse_data_pid).transpose()?;
+        let mut last_token_direction: Option<Direction> = None;
+
+        loop {
+            py.check_signals()?;
+            let next = {
+                let stream = match slf.inner.as_mut() {
+                    Some(stream) => stream,
+                    None => return Ok(None),
+                };
+                py.detach(|| stream.poll_next(Duration::from_millis(100)))
+            };
+            py.check_signals()?;
+
+            match next {
+                CapturePoll::Timeout => continue,
+                CapturePoll::Ended => {
+                    slf.inner.take();
+                    return Ok(None);
+                }
+                CapturePoll::Event(Ok(TimestampedEvent::Event { .. })) => continue,
+                CapturePoll::Event(Ok(TimestampedEvent::Packet { timestamp_ns, bytes })) => {
+                    let Some(pid) = packet_pid(&bytes) else {
+                        continue;
+                    };
+
+                    if pid == PID::IN {
+                        last_token_direction = Some(Direction::In);
+                        continue;
+                    }
+                    if pid == PID::OUT {
+                        last_token_direction = Some(Direction::Out);
+                        continue;
+                    }
+                    if !is_data_pid(pid) {
+                        continue;
+                    }
+                    if direction != Direction::Any {
+                        // Best effort: if we have not observed an IN/OUT token yet,
+                        // do not reject on direction alone.
+                        if let Some(observed_direction) = last_token_direction {
+                            if observed_direction != direction {
+                                continue;
+                            }
+                        }
+                    }
+                    if let Some(expected_pid) = data_pid {
+                        if expected_pid != pid {
+                            continue;
+                        }
+                    }
+
+                    let Some(payload) = payload_from_data_packet(&bytes) else {
+                        continue;
+                    };
+                    if !payload.starts_with(&pattern) {
+                        continue;
+                    }
+
+                    if let Some(stream) = slf.inner.take() {
+                        py.detach(|| stream.stop())
+                            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+                    }
+
+                    let packet = Packet {
+                        timestamp_ns,
+                        bytes,
+                    };
+                    return Py::new(py, packet).map(|obj| Some(obj.into_any()));
+                }
+                CapturePoll::Event(Err(err)) => return Err(PyRuntimeError::new_err(err.to_string())),
+            }
+        }
     }
 }
 
@@ -118,6 +212,57 @@ fn parse_speed(speed: &Bound<'_, PyAny>) -> PyResult<Speed> {
         Err(PyTypeError::new_err(
             "speed must be a string like 'auto' or a u8 value",
         ))
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum Direction {
+    Any,
+    In,
+    Out,
+}
+
+fn parse_direction(direction: &str) -> PyResult<Direction> {
+    match direction.to_ascii_lowercase().as_str() {
+        "any" => Ok(Direction::Any),
+        "in" | "incoming" => Ok(Direction::In),
+        "out" | "outgoing" => Ok(Direction::Out),
+        _ => Err(PyValueError::new_err(
+            "direction must be one of: any, in, out",
+        )),
+    }
+}
+
+fn parse_data_pid(data_pid: &str) -> PyResult<PID> {
+    match data_pid.to_ascii_lowercase().as_str() {
+        "data0" => Ok(PID::DATA0),
+        "data1" => Ok(PID::DATA1),
+        "data2" => Ok(PID::DATA2),
+        "mdata" => Ok(PID::MDATA),
+        _ => Err(PyValueError::new_err(
+            "data_pid must be one of: data0, data1, data2, mdata",
+        )),
+    }
+}
+
+fn packet_pid(bytes: &[u8]) -> Option<PID> {
+    match cw::validate_packet(bytes) {
+        Ok(pid) => Some(pid),
+        Err(Some(pid)) => Some(pid),
+        Err(None) => None,
+    }
+}
+
+fn is_data_pid(pid: PID) -> bool {
+    matches!(pid, PID::DATA0 | PID::DATA1 | PID::DATA2 | PID::MDATA)
+}
+
+fn payload_from_data_packet(bytes: &[u8]) -> Option<&[u8]> {
+    // Data packets are PID + payload + CRC16.
+    if bytes.len() < 3 {
+        None
+    } else {
+        Some(&bytes[1..(bytes.len() - 2)])
     }
 }
 

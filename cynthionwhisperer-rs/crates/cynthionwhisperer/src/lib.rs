@@ -8,9 +8,10 @@ pub mod usb;
 pub mod util;
 
 use anyhow::{Context, Error};
+use std::time::Duration;
 
 use crate::backend::cynthion::{CynthionDevice, CynthionHandle, VID_PID};
-use crate::backend::{BackendHandle, BackendStop, EventIterator, EventResult};
+use crate::backend::{BackendHandle, BackendStop, EventIterator, EventPoll, EventResult};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -74,12 +75,26 @@ pub struct CaptureStream {
     stop: Option<BackendStop>,
 }
 
+pub enum CapturePoll {
+    Event(EventResult),
+    Timeout,
+    Ended,
+}
+
 impl CaptureStream {
     pub fn stop(mut self) -> Result<()> {
         if let Some(stop) = self.stop.take() {
             stop.stop()?;
         }
         Ok(())
+    }
+
+    pub fn poll_next(&mut self, timeout: Duration) -> CapturePoll {
+        match self.events.poll_next(timeout) {
+            EventPoll::Event(event) => CapturePoll::Event(event),
+            EventPoll::Timeout => CapturePoll::Timeout,
+            EventPoll::Ended => CapturePoll::Ended,
+        }
     }
 }
 

@@ -6,7 +6,7 @@ import cynthionwhisperer
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Capture packets/events from a Cynthion analyzer via cynthionwhisperer"
+        description="Capture until a matching DATA packet payload starts with a byte prefix"
     )
     parser.add_argument(
         "--speed",
@@ -15,36 +15,59 @@ def _parse_args() -> argparse.Namespace:
         help="Capture speed selection",
     )
     parser.add_argument(
-        "--max-events",
-        type=int,
-        default=10,
-        help="Maximum number of events to print before stopping",
+        "--direction",
+        default="in",
+        choices=["any", "in", "out"],
+        help="Match traffic direction",
+    )
+    parser.add_argument(
+        "--data-pid",
+        choices=["data0", "data1", "data2", "mdata"],
+        help="Optional DATA PID filter (default: match any DATA PID)",
+    )
+    parser.add_argument(
+        "--pattern-hex",
+        default="20",
+        help="Payload prefix as hex bytes (e.g. '20' or '20 01')",
     )
     return parser.parse_args()
 
 
-def _format_event(event: object) -> str:
-    if hasattr(event, "bytes"):
-        payload = event.bytes
-        return f"packet ts={event.timestamp_ns} len={len(payload)}"
-    return f"event ts={event.timestamp_ns} type={event.event_type}"
-
-
 def main() -> int:
     args = _parse_args()
+    try:
+        pattern = bytes.fromhex(args.pattern_hex)
+    except ValueError as error:
+        print(f"Invalid --pattern-hex value: {error}", file=sys.stderr)
+        return 2
+    if not pattern:
+        print("--pattern-hex must contain at least one byte", file=sys.stderr)
+        return 2
 
     analyzer = cynthionwhisperer.Cynthion.open_first()
     capture = analyzer.start_capture(args.speed)
 
-    printed = 0
     try:
-        for event in capture:
-            print(_format_event(event))
-            printed += 1
-            if printed >= args.max_events:
-                break
+        packet = capture.capture_until(args.direction, pattern, args.data_pid)
     finally:
         capture.stop()
+
+    if packet is None:
+        pid_text = args.data_pid if args.data_pid else "any DATA PID"
+        print(
+            f"No matching {args.direction} packet found "
+            f"(pid={pid_text}, payload_prefix={pattern.hex()})."
+        )
+        return 1
+
+    raw = packet.bytes
+    payload = raw[1:-2] if len(raw) >= 3 else b""
+    pid_text = args.data_pid if args.data_pid else "any DATA PID"
+    print(
+        f"Matched {args.direction} packet at {packet.timestamp_ns} ns "
+        f"(pid={pid_text}, payload_prefix={pattern.hex()})"
+    )
+    print(f"Payload ({len(payload)} bytes): {payload.hex()}")
 
     return 0
 

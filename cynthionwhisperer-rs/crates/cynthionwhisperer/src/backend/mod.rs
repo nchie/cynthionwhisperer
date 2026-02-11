@@ -102,7 +102,15 @@ pub struct BackendStop {
 }
 
 pub type EventResult = Result<TimestampedEvent, Error>;
-pub trait EventIterator: Iterator<Item=EventResult> + Send + UnwindSafe {}
+pub enum EventPoll {
+    Event(EventResult),
+    Timeout,
+    Ended,
+}
+
+pub trait EventIterator: Iterator<Item=EventResult> + Send + UnwindSafe {
+    fn poll_next(&mut self, timeout: Duration) -> EventPoll;
+}
 
 /// Configuration for power control.
 #[derive(Clone)]

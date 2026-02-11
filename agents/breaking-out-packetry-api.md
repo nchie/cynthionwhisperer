@@ -24,3 +24,24 @@
 - - CLI entrypoint `cynthionwhisperer-capture` that opens the analyzer and prints captured packets/events.
 - Renamed the Python example project directory from `cynthionwhisperer-python` to `cynthionwhisperer-example` and updated internal references in `README.md`, `pyproject.toml`, and `scripts/dev_setup.sh`.
 - Updated root `.gitignore` to ignore Python virtualenv/cache/build artifacts generically across subprojects.
+- Added `Capture.capture_until(direction, pattern, data_pid=None)` to `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer-py/src/lib.rs`.
+- `capture_until` tracks `IN`/`OUT` token direction and matches DATA packet payload prefix, then stops capture and returns the matched packet.
+- Updated `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-example/src/cynthionwhisperer_python/cli.py` to implement the example use-case: capture until incoming `DATA1` payload starts with `0x20`, then print payload.
+- Updated `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-example/README.md` to document the new behavior.
+- Updated example CLI arguments to aid debugging and matching:
+- - Added `--direction` (`in`/`out`), optional `--data-pid`, and `--pattern-hex`.
+- - Default now matches incoming packets with payload prefix `0x20`, without forcing `DATA1`.
+- Updated README examples for both broad matching and strict `DATA1` matching.
+- Fixed interrupt behavior in `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer-py/src/lib.rs`:
+- - `Capture.__next__` and `Capture.capture_until` now release the GIL during blocking waits using `py.detach(...)`.
+- - Added `py.check_signals()?` around waits so `CTRL-C` is surfaced as `KeyboardInterrupt`.
+- - `Capture.stop` now also runs `stream.stop()` with GIL released.
+- Reworked capture polling to make interrupts reliable even when no packets arrive:
+- - Added timeout polling support in backend iterator API (`EventPoll` and `EventIterator::poll_next`) in `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer/src/backend/mod.rs`.
+- - Implemented timeout-aware waits in `CynthionStream` using `recv_timeout` in `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer/src/backend/cynthion.rs`.
+- - Added `CaptureStream::poll_next` and `CapturePoll` in `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer/src/lib.rs`.
+- - Updated PyO3 `__next__` and `capture_until` to loop on 100ms polls and run `py.check_signals()` between polls in `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer-py/src/lib.rs`.
+- Made `capture_until` direction handling more tolerant for streams where IN/OUT token visibility is incomplete:
+- - Added `direction=\"any\"` support in `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer-py/src/lib.rs`.
+- - If no IN/OUT token has been observed yet, direction filtering no longer rejects a DATA packet by default.
+- - Updated CLI option choices to include `--direction any` in `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-example/src/cynthionwhisperer_python/cli.py`.

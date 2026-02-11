@@ -36,6 +36,43 @@ cynthionwhisperer-capture trigger-config \
   --arm
 ```
 
+or a more complex sequence which should match the following sequence:
+![alt text](packetry-request.png)
+
+```
+
+## Setup to trigger after a SET_REQUEST with the following parameters has been ACKed
+# 1 = bmRequestType (21)
+# 2 = bRequest (09)
+# 3..4 = wValue (F4 03, little-endian)
+# 5..6 = wIndex (03 00)
+# 7..8 = wLength (1F 00)
+
+## SETUP packet
+cynthionwhisperer-capture trigger-config \
+  --stage-index 0 --offset 1 --pattern-hex "21 09 F4 03 03 00 1F 00" --stage-count 6
+
+## DATA1 packet with payload
+cynthionwhisperer-capture trigger-config \
+  --stage-index 1 --offset 1 --pattern-hex "F4 00 1C 30 37 30 34" --stage-count 6
+
+## NYET packet in the same OUT transaction
+cynthionwhisperer-capture trigger-config \
+  --stage-index 2 --offset 0 --pattern-hex "96" --stage-count 6
+
+## IN transaction
+cynthionwhisperer-capture trigger-config \
+  --stage-index 3 --offset 0 --pattern-hex "69" --stage-count 6
+
+## DATA1 packet with CRC 0000
+cynthionwhisperer-capture trigger-config \
+  --stage-index 4 --offset 0 --pattern-hex "4B" --stage-count 6
+
+## Final ACK packet
+cynthionwhisperer-capture trigger-config \
+  --stage-index 5 --offset 0 --pattern-hex "D2" --stage-count 6 --arm
+```
+
 Read trigger status:
 
 ```bash

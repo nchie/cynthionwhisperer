@@ -1,5 +1,6 @@
 import argparse
 import sys
+import time
 from typing import Optional
 
 import cynthionwhisperer
@@ -132,6 +133,29 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Disarm trigger state machine",
     )
 
+    target_power_parser = subparsers.add_parser(
+        "target-power",
+        help="Read or control target power switching",
+    )
+    target_power_parser.add_argument(
+        "action",
+        nargs="?",
+        default="status",
+        choices=["status", "on", "off", "cycle"],
+        help="Power action (default: status)",
+    )
+    target_power_parser.add_argument(
+        "--source",
+        default="target-c",
+        help="Power source name (e.g. target-c, control, aux, host)",
+    )
+    target_power_parser.add_argument(
+        "--delay-ms",
+        type=int,
+        default=250,
+        help="Cycle off delay in milliseconds (default: 250)",
+    )
+
     # Backward compatibility: if no subcommand is given, treat as `capture`.
     effective_argv = list(argv if argv is not None else sys.argv[1:])
     if not effective_argv:
@@ -152,6 +176,35 @@ def _print_trigger_status(analyzer: cynthionwhisperer.Cynthion) -> None:
         f"output_state={output_state} sequence_stage={sequence_stage} "
         f"fire_count={fire_count} stage_count={stage_count}"
     )
+
+
+def _canonical_source_name(name: str) -> str:
+    cleaned = name.strip().upper().replace("_", "-")
+    if cleaned in ("TARGETC", "TARGET-C"):
+        return "TARGET-C"
+    if cleaned in ("CONTROL",):
+        return "CONTROL"
+    if cleaned in ("AUX",):
+        return "AUX"
+    if cleaned in ("HOST",):
+        return "HOST"
+    return cleaned
+
+
+def _resolve_power_source_index(requested: str, sources: list[str]) -> Optional[int]:
+    canonical_sources = [_canonical_source_name(source) for source in sources]
+    requested_name = _canonical_source_name(requested)
+
+    if requested_name in canonical_sources:
+        return canonical_sources.index(requested_name)
+
+    # Old firmware versions may expose HOST instead of CONTROL.
+    if requested_name == "CONTROL" and "HOST" in canonical_sources:
+        return canonical_sources.index("HOST")
+    if requested_name == "HOST" and "CONTROL" in canonical_sources:
+        return canonical_sources.index("CONTROL")
+
+    return None
 
 
 def _cmd_capture(args: argparse.Namespace) -> int:
@@ -319,6 +372,71 @@ def _cmd_trigger_disarm() -> int:
     return 0
 
 
+def _cmd_target_power(args: argparse.Namespace) -> int:
+    analyzer = cynthionwhisperer.Cynthion.open_first()
+    sources = analyzer.power_sources()
+    if not sources:
+        print("Power control is not supported by this gateware/device.", file=sys.stderr)
+        return 1
+
+    config = analyzer.power_config()
+    if config is None:
+        print("Power configuration unavailable.", file=sys.stderr)
+        return 1
+
+    source_index, on_now, start_on, stop_off = config
+
+    if args.action == "status":
+        source_name = sources[source_index] if source_index < len(sources) else f"index-{source_index}"
+        print(
+            f"Target power: on_now={on_now} source={source_name} "
+            f"start_on={start_on} stop_off={stop_off} "
+            f"available_sources={','.join(sources)}"
+        )
+        return 0
+
+    selected_source_index = _resolve_power_source_index(args.source, list(sources))
+    if selected_source_index is None:
+        print(
+            f"Unknown --source '{args.source}'. Available sources: {', '.join(sources)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.delay_ms < 0:
+        print("--delay-ms must be >= 0", file=sys.stderr)
+        return 2
+
+    if args.action == "on":
+        analyzer.set_power_config(selected_source_index, True, start_on, stop_off)
+        print(f"Target power ON via {sources[selected_source_index]}")
+    elif args.action == "off":
+        analyzer.set_power_config(selected_source_index, False, start_on, stop_off)
+        print("Target power OFF")
+    elif args.action == "cycle":
+        analyzer.set_power_config(selected_source_index, True, start_on, stop_off)
+        time.sleep(args.delay_ms / 1000.0)
+        analyzer.set_power_config(selected_source_index, False, start_on, stop_off)
+        print(
+            f"Target power cycled via {sources[selected_source_index]} "
+            f"(on for {args.delay_ms} ms)"
+        )
+
+    updated = analyzer.power_config()
+    if updated is not None:
+        updated_source_index, updated_on_now, updated_start_on, updated_stop_off = updated
+        updated_source_name = (
+            sources[updated_source_index]
+            if updated_source_index < len(sources)
+            else f"index-{updated_source_index}"
+        )
+        print(
+            f"Target power status: on_now={updated_on_now} source={updated_source_name} "
+            f"start_on={updated_start_on} stop_off={updated_stop_off}"
+        )
+    return 0
+
+
 def main() -> int:
     args = _parse_args()
 
@@ -334,6 +452,8 @@ def main() -> int:
         return _cmd_trigger_arm()
     if args.command == "trigger-disarm":
         return _cmd_trigger_disarm()
+    if args.command == "target-power":
+        return _cmd_target_power(args)
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 2

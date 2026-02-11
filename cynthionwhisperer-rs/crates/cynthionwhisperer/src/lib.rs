@@ -53,6 +53,18 @@ impl Cynthion {
         self.handle.metadata()
     }
 
+    pub fn power_sources(&self) -> Option<&[&str]> {
+        self.handle.power_sources()
+    }
+
+    pub async fn power_config(&self) -> Option<crate::backend::PowerConfig> {
+        self.handle.power_config().await
+    }
+
+    pub async fn set_power_config(&mut self, config: crate::backend::PowerConfig) -> Result<()> {
+        self.handle.set_power_config(config).await
+    }
+
     pub fn start_capture(&self, speed: Speed) -> Result<CaptureStream> {
         let (events, stop) = self.handle.start(
             speed,
@@ -145,6 +157,7 @@ impl Iterator for CaptureStream {
 
 pub use crate::usb::validate_packet;
 pub use crate::{
+    backend::PowerConfig,
     backend::TimestampedEvent,
     backend::cynthion::{TriggerCaps, TriggerControl, TriggerStage, TriggerStatus},
     capture::CaptureMetadata,

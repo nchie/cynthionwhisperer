@@ -5,7 +5,10 @@ use pyo3::types::{PyAny, PyBytes, PyType};
 use pyo3::{Bound, Py};
 
 use ::cynthionwhisperer as cw;
-use cw::{CapturePoll, CaptureStream, PID, Speed, TimestampedEvent, TriggerControl, TriggerStage};
+use cw::{
+    CapturePoll, CaptureStream, PID, PowerConfig, Speed, TimestampedEvent, TriggerControl,
+    TriggerStage,
+};
 use std::time::Duration;
 
 #[pyclass(unsendable)]
@@ -32,6 +35,43 @@ impl Cynthion {
         Ok(Capture {
             inner: Some(stream),
         })
+    }
+
+    fn power_sources(&self) -> Option<Vec<String>> {
+        self.inner
+            .power_sources()
+            .map(|sources| sources.iter().map(|source| source.to_string()).collect())
+    }
+
+    fn power_config(&self, py: Python<'_>) -> PyResult<Option<(usize, bool, bool, bool)>> {
+        let config = py.detach(|| block_on(self.inner.power_config()));
+        Ok(config.map(|config| {
+            (
+                config.source_index,
+                config.on_now,
+                config.start_on,
+                config.stop_off,
+            )
+        }))
+    }
+
+    #[pyo3(signature = (source_index, on_now, start_on=false, stop_off=false))]
+    fn set_power_config(
+        &mut self,
+        py: Python<'_>,
+        source_index: usize,
+        on_now: bool,
+        start_on: bool,
+        stop_off: bool,
+    ) -> PyResult<()> {
+        let config = PowerConfig {
+            source_index,
+            on_now,
+            start_on,
+            stop_off,
+        };
+        py.detach(|| block_on(self.inner.set_power_config(config)))
+            .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))
     }
 
     fn trigger_caps(&self, py: Python<'_>) -> PyResult<(u8, u8, u16)> {

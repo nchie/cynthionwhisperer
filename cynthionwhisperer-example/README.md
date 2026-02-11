@@ -91,6 +91,32 @@ Disarm trigger:
 cynthionwhisperer-capture trigger-disarm
 ```
 
+## Target power control
+
+Read current target power state and supported sources:
+
+```bash
+cynthionwhisperer-capture target-power status
+```
+
+Turn target power on (source examples: `target-c`, `control`, `aux`, `host`):
+
+```bash
+cynthionwhisperer-capture target-power on --source target-c
+```
+
+Turn target power off:
+
+```bash
+cynthionwhisperer-capture target-power off --source target-c
+```
+
+Power cycle target (on for 500 ms, then off):
+
+```bash
+cynthionwhisperer-capture target-power cycle --source target-c --delay-ms 500
+```
+
 ## Notes
 
 - `scripts/dev_setup.sh` builds and installs the extension from:

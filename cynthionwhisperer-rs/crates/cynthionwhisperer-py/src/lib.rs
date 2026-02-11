@@ -20,7 +20,7 @@ impl Cynthion {
         let result = block_on(cw::Cynthion::open_first());
         result
             .map(|inner| Self { inner })
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+            .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))
     }
 
     fn start_capture(&self, speed: &Bound<'_, PyAny>) -> PyResult<Capture> {

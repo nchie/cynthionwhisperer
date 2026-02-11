@@ -53,6 +53,14 @@ class _DefaultTriggerConfig:
             for i in range(self.max_stages * self.max_pattern)
         )
 
+        flat_depth = self.max_stages * self.max_pattern
+        self.pattern_write_en = Signal()
+        self.pattern_write_addr = Signal(range(flat_depth))
+        self.pattern_write_data = Signal(8)
+        self.mask_write_en = Signal()
+        self.mask_write_addr = Signal(range(flat_depth))
+        self.mask_write_data = Signal(8)
+
         self.arm_strobe = Signal()
         self.disarm_strobe = Signal()
 
@@ -186,6 +194,8 @@ class USBAnalyzer(Elaboratable):
         stage_match_count = Signal(range(self.trigger.max_pattern + 1))
         seq_expected_stage = Signal(range(self.trigger.max_stages + 1))
         pending_trigger_event = Signal()
+        pending_stage_compare = Signal()
+        pending_stage_byte = Signal(8)
 
         active_stage_index = Signal(range(self.trigger.max_stages))
         active_stage_offset = Signal(16)
@@ -196,8 +206,22 @@ class USBAnalyzer(Elaboratable):
         stage_window_hit = Signal()
         pattern_index = Signal(range(self.trigger.max_pattern))
         pattern_flat_index = Signal(range(self.trigger.max_stages * self.trigger.max_pattern))
-        expected_byte = Signal(8)
-        expected_mask = Signal(8)
+        pending_stage_mismatch = Signal()
+        stage_mismatch_effective = Signal()
+
+        # Pattern/mask memories let synthesis map match tables into BRAM
+        # rather than wide mux trees from dynamic Array indexing.
+        flat_depth = self.trigger.max_stages * self.trigger.max_pattern
+        pattern_memory = Memory(width=8, depth=flat_depth, init=[0] * flat_depth)
+        mask_memory = Memory(width=8, depth=flat_depth, init=[0xFF] * flat_depth)
+        m.submodules.pattern_read_port = pattern_read_port = \
+            pattern_memory.read_port(domain="usb", transparent=False)
+        m.submodules.mask_read_port = mask_read_port = \
+            mask_memory.read_port(domain="usb", transparent=False)
+        m.submodules.pattern_write_port = pattern_write_port = \
+            pattern_memory.write_port(domain="usb")
+        m.submodules.mask_write_port = mask_write_port = \
+            mask_memory.write_port(domain="usb")
 
         m.d.comb += [
             active_stage_index.eq(seq_expected_stage[0:self.trigger.stage_bits]),
@@ -223,8 +247,21 @@ class USBAnalyzer(Elaboratable):
             ),
             pattern_index.eq(packet_byte_index - active_stage_offset),
             pattern_flat_index.eq(active_stage_index * self.trigger.max_pattern + pattern_index),
-            expected_byte.eq(self.trigger.patterns_flat[pattern_flat_index]),
-            expected_mask.eq(self.trigger.masks_flat[pattern_flat_index]),
+            pattern_read_port.en.eq(stage_window_hit),
+            pattern_read_port.addr.eq(pattern_flat_index),
+            mask_read_port.en.eq(stage_window_hit),
+            mask_read_port.addr.eq(pattern_flat_index),
+            pattern_write_port.en.eq(self.trigger.pattern_write_en),
+            pattern_write_port.addr.eq(self.trigger.pattern_write_addr),
+            pattern_write_port.data.eq(self.trigger.pattern_write_data),
+            mask_write_port.en.eq(self.trigger.mask_write_en),
+            mask_write_port.addr.eq(self.trigger.mask_write_addr),
+            mask_write_port.data.eq(self.trigger.mask_write_data),
+            pending_stage_mismatch.eq(
+                (pending_stage_byte & mask_read_port.data) !=
+                (pattern_read_port.data & mask_read_port.data)
+            ),
+            stage_mismatch_effective.eq(stage_mismatch | (pending_stage_compare & pending_stage_mismatch)),
             self.trigger_sequence_stage.eq(seq_expected_stage),
         ]
 
@@ -305,6 +342,7 @@ class USBAnalyzer(Elaboratable):
                     packet_byte_index.eq(0),
                     stage_mismatch.eq(0),
                     stage_match_count.eq(0),
+                    pending_stage_compare.eq(0),
                     seq_expected_stage.eq(0),
                     pending_trigger_event.eq(0),
                 ]
@@ -364,6 +402,7 @@ class USBAnalyzer(Elaboratable):
                         packet_byte_index  .eq(0),
                         stage_mismatch     .eq(0),
                         stage_match_count  .eq(0),
+                        pending_stage_compare.eq(0),
                     ]
                 with m.Elif(self.event_strobe):
                     # Event detected externally.
@@ -388,6 +427,10 @@ class USBAnalyzer(Elaboratable):
 
                 byte_received = self.utmi.rx_valid & self.utmi.rx_active
 
+                m.d.usb += pending_stage_compare.eq(0)
+                with m.If(pending_stage_compare & pending_stage_mismatch):
+                    m.d.usb += stage_mismatch.eq(1)
+
                 # Capture data whenever RxValid is asserted.
                 m.d.comb += [
                     write_packet    .eq(byte_received),
@@ -401,12 +444,11 @@ class USBAnalyzer(Elaboratable):
                     ]
 
                     with m.If(stage_window_hit):
-                        m.d.usb += stage_match_count.eq(stage_match_count + 1)
-                        with m.If(
-                            (self.utmi.rx_data & expected_mask) !=
-                            (expected_byte & expected_mask)
-                        ):
-                            m.d.usb += stage_mismatch.eq(1)
+                        m.d.usb += [
+                            stage_match_count.eq(stage_match_count + 1),
+                            pending_stage_compare.eq(1),
+                            pending_stage_byte.eq(self.utmi.rx_data),
+                        ]
 
                     # If this would be filling up our data memory,
                     # move to the OVERRUN state.
@@ -422,7 +464,7 @@ class USBAnalyzer(Elaboratable):
                     with m.If(
                         active_stage_valid &
                         (active_stage_len > 0) &
-                        ~stage_mismatch &
+                        ~stage_mismatch_effective &
                         (stage_match_count == active_stage_len) &
                         (packet_size >= (active_stage_offset + active_stage_len))
                     ):
@@ -798,9 +840,12 @@ class USBAnalyzerTest(USBAnalyzerTestBase):
         yield self.analyzer.trigger.stage_count.eq(1)
         yield self.analyzer.trigger.stage_offsets[0].eq(1)
         yield self.analyzer.trigger.stage_lengths[0].eq(3)
-        yield self.analyzer.trigger.patterns_flat[0].eq(0xAA)
-        yield self.analyzer.trigger.patterns_flat[1].eq(0xBB)
-        yield self.analyzer.trigger.patterns_flat[2].eq(0xCC)
+        for i, value in enumerate((0xAA, 0xBB, 0xCC)):
+            yield self.analyzer.trigger.pattern_write_addr.eq(i)
+            yield self.analyzer.trigger.pattern_write_data.eq(value)
+            yield self.analyzer.trigger.pattern_write_en.eq(1)
+            yield
+        yield self.analyzer.trigger.pattern_write_en.eq(0)
         yield
 
         # Start capture and send a matching packet.
@@ -834,9 +879,12 @@ class USBAnalyzerTest(USBAnalyzerTestBase):
         yield self.analyzer.trigger.stage_count.eq(1)
         yield self.analyzer.trigger.stage_offsets[0].eq(1)
         yield self.analyzer.trigger.stage_lengths[0].eq(3)
-        yield self.analyzer.trigger.patterns_flat[0].eq(0xAA)
-        yield self.analyzer.trigger.patterns_flat[1].eq(0xBB)
-        yield self.analyzer.trigger.patterns_flat[2].eq(0xCC)
+        for i, value in enumerate((0xAA, 0xBB, 0xCC)):
+            yield self.analyzer.trigger.pattern_write_addr.eq(i)
+            yield self.analyzer.trigger.pattern_write_data.eq(value)
+            yield self.analyzer.trigger.pattern_write_en.eq(1)
+            yield
+        yield self.analyzer.trigger.pattern_write_en.eq(0)
         yield
 
         # Start capture and send a non-matching packet.

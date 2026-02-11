@@ -99,6 +99,15 @@ class USBAnalyzerTriggerConfig:
         self.patterns_flat = Array(pattern_flat)
         self.masks_flat = Array(mask_flat)
 
+        # BRAM-backed pattern/mask writes for the analyzer datapath.
+        flat_depth = max_stages * max_pattern
+        self.pattern_write_en = Signal()
+        self.pattern_write_addr = Signal(range(flat_depth))
+        self.pattern_write_data = Signal(8)
+        self.mask_write_en = Signal()
+        self.mask_write_addr = Signal(range(flat_depth))
+        self.mask_write_data = Signal(8)
+
         # Host control strobes.
         self.arm_strobe = Signal()
         self.disarm_strobe = Signal()
@@ -194,6 +203,8 @@ class USBAnalyzerVendorRequestHandler(ControlRequestHandler):
         control_stage_count = Signal(8)
 
         status_flags = Signal(8)
+        status_sequence_stage = Signal(8)
+        status_stage_count = Signal(8)
         m.d.comb += status_flags.eq(Cat(
             self.trigger.enable,
             self.trigger.armed,
@@ -201,17 +212,34 @@ class USBAnalyzerVendorRequestHandler(ControlRequestHandler):
             self.trigger.trigger_out,
             C(0, 4),
         ))
+        m.d.comb += [
+            status_sequence_stage.eq(self.trigger.sequence_stage),
+            status_stage_count.eq(self.trigger.stage_count),
+        ]
 
         # This handler emits momentary strobes for arm/disarm operations.
         m.d.comb += [
             self.trigger.arm_strobe.eq(0),
             self.trigger.disarm_strobe.eq(0),
+            self.trigger.pattern_write_en.eq(0),
+            self.trigger.pattern_write_addr.eq(0),
+            self.trigger.pattern_write_data.eq(0),
+            self.trigger.mask_write_en.eq(0),
+            self.trigger.mask_write_addr.eq(0),
+            self.trigger.mask_write_data.eq(0),
             stage_index.eq(stage_index_raw[0:self.trigger.stage_bits]),
             valid_stage_index.eq(stage_index_raw < self.trigger.max_stages),
         ]
 
-        # Transmitter for all constant-size and stage readback responses.
-        m.submodules.transmitter = transmitter = StreamSerializer(
+        # Small transmitter for common 1-5 byte replies.
+        m.submodules.simple_transmitter = simple_transmitter = StreamSerializer(
+            data_length=TRIGGER_STATUS_PAYLOAD_LEN,
+            domain="usb",
+            stream_type=USBInStreamInterface,
+            max_length_width=3,
+        )
+        # Stage transmitter is only used for full stage readback.
+        m.submodules.stage_transmitter = stage_transmitter = StreamSerializer(
             data_length=TRIGGER_STAGE_PAYLOAD_LEN,
             domain="usb",
             stream_type=USBInStreamInterface,
@@ -282,7 +310,7 @@ class USBAnalyzerVendorRequestHandler(ControlRequestHandler):
 
                 # GET_STATE -- Fetch the device's state
                 with m.State('GET_STATE'):
-                    self.handle_simple_data_request(m, transmitter, self.state.current, length=1)
+                    self.handle_simple_data_request(m, simple_transmitter, self.state.current, length=1)
 
                 # SET_STATE -- The host is trying to set our state
                 with m.State('SET_STATE'):
@@ -300,7 +328,7 @@ class USBAnalyzerVendorRequestHandler(ControlRequestHandler):
                         supported_speeds |= \
                             USBAnalyzerSupportedSpeeds.USB_SPEED_AUTO
 
-                    self.handle_simple_data_request(m, transmitter, supported_speeds, length=1)
+                    self.handle_simple_data_request(m, simple_transmitter, supported_speeds, length=1)
 
                 # SET_TEST_CONFIG -- The host is trying to configure our test device
                 with m.State('SET_TEST_CONFIG'):
@@ -308,7 +336,7 @@ class USBAnalyzerVendorRequestHandler(ControlRequestHandler):
 
                 # GET_STATE -- Fetch the device's state
                 with m.State('GET_MINOR_VERSION'):
-                    self.handle_simple_data_request(m, transmitter, C(MINOR_VERSION), length=1)
+                    self.handle_simple_data_request(m, simple_transmitter, C(MINOR_VERSION), length=1)
 
                 # GET_TRIGGER_CAPS -- Trigger engine capabilities.
                 with m.State('GET_TRIGGER_CAPS'):
@@ -320,7 +348,7 @@ class USBAnalyzerVendorRequestHandler(ControlRequestHandler):
                     )
                     self.handle_simple_data_request(
                         m,
-                        transmitter,
+                        simple_transmitter,
                         caps,
                         length=TRIGGER_CAPS_PAYLOAD_LEN,
                     )
@@ -390,10 +418,20 @@ class USBAnalyzerVendorRequestHandler(ControlRequestHandler):
                                     with m.Case(4 + i):
                                         flat_index = Cat(C(i, self.trigger.pattern_bits), stage_index)
                                         m.d.usb += self.trigger.patterns_flat[flat_index].eq(interface.rx.payload)
+                                        m.d.comb += [
+                                            self.trigger.pattern_write_en.eq(1),
+                                            self.trigger.pattern_write_addr.eq(flat_index),
+                                            self.trigger.pattern_write_data.eq(interface.rx.payload),
+                                        ]
                                 for i in range(TRIGGER_MAX_PATTERN_BYTES):
                                     with m.Case(4 + TRIGGER_MAX_PATTERN_BYTES + i):
                                         flat_index = Cat(C(i, self.trigger.pattern_bits), stage_index)
                                         m.d.usb += self.trigger.masks_flat[flat_index].eq(interface.rx.payload)
+                                        m.d.comb += [
+                                            self.trigger.mask_write_en.eq(1),
+                                            self.trigger.mask_write_addr.eq(flat_index),
+                                            self.trigger.mask_write_data.eq(interface.rx.payload),
+                                        ]
                         with m.If(rx_count < TRIGGER_STAGE_PAYLOAD_LEN):
                             m.d.usb += rx_count.eq(rx_count + 1)
 
@@ -414,14 +452,14 @@ class USBAnalyzerVendorRequestHandler(ControlRequestHandler):
                 with m.State('GET_TRIGGER_STATUS'):
                     status = Cat(
                         status_flags,
-                        self.trigger.sequence_stage,
+                        status_sequence_stage,
                         self.trigger.fire_count[0:8],
                         self.trigger.fire_count[8:16],
-                        self.trigger.stage_count,
+                        status_stage_count,
                     )
                     self.handle_simple_data_request(
                         m,
-                        transmitter,
+                        simple_transmitter,
                         status,
                         length=TRIGGER_STATUS_PAYLOAD_LEN,
                     )
@@ -452,25 +490,25 @@ class USBAnalyzerVendorRequestHandler(ControlRequestHandler):
                 with m.State('GET_TRIGGER_STAGE'):
                     m.d.comb += [
                         interface.claim.eq(1),
-                        transmitter.stream.attach(interface.tx),
-                        transmitter.max_length.eq(TRIGGER_STAGE_PAYLOAD_LEN),
-                        transmitter.data[0].eq(self.trigger.stage_offsets[stage_index][0:8]),
-                        transmitter.data[1].eq(self.trigger.stage_offsets[stage_index][8:16]),
-                        transmitter.data[2].eq(self.trigger.stage_lengths[stage_index]),
-                        transmitter.data[3].eq(C(0, 8)),
+                        stage_transmitter.stream.attach(interface.tx),
+                        stage_transmitter.max_length.eq(TRIGGER_STAGE_PAYLOAD_LEN),
+                        stage_transmitter.data[0].eq(self.trigger.stage_offsets[stage_index][0:8]),
+                        stage_transmitter.data[1].eq(self.trigger.stage_offsets[stage_index][8:16]),
+                        stage_transmitter.data[2].eq(self.trigger.stage_lengths[stage_index]),
+                        stage_transmitter.data[3].eq(C(0, 8)),
                     ]
                     for i in range(TRIGGER_MAX_PATTERN_BYTES):
                         flat_index = Cat(C(i, self.trigger.pattern_bits), stage_index)
-                        m.d.comb += transmitter.data[4 + i].eq(self.trigger.patterns_flat[flat_index])
+                        m.d.comb += stage_transmitter.data[4 + i].eq(self.trigger.patterns_flat[flat_index])
                     for i in range(TRIGGER_MAX_PATTERN_BYTES):
                         flat_index = Cat(C(i, self.trigger.pattern_bits), stage_index)
-                        m.d.comb += transmitter.data[4 + TRIGGER_MAX_PATTERN_BYTES + i].eq(
+                        m.d.comb += stage_transmitter.data[4 + TRIGGER_MAX_PATTERN_BYTES + i].eq(
                             self.trigger.masks_flat[flat_index]
                         )
 
                     with m.If(interface.data_requested):
                         with m.If(valid_stage_index):
-                            m.d.comb += transmitter.start.eq(1)
+                            m.d.comb += stage_transmitter.start.eq(1)
                         with m.Else():
                             m.d.comb += interface.handshakes_out.stall.eq(1)
                             m.next = 'IDLE'

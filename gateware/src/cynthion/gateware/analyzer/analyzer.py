@@ -390,8 +390,7 @@ class USBAnalyzer(Elaboratable):
                     ]
                 with m.Elif(
                     self.utmi.rx_active &
-                    self.session_valid &
-                    (self.speed_selection != USBAnalyzerSpeed.AUTO)
+                    self.session_valid
                 ):
                     m.d.comb += new_packet.eq(1)
                     m.next = "CAPTURE_PACKET"

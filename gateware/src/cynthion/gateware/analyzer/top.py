@@ -828,8 +828,13 @@ class USBAnalyzerApplet(Elaboratable):
         try:
             trigger_pmod = platform.request("user_pmod", 0)
             m.d.comb += [
-                trigger_pmod.oe[0].eq(1),
-                trigger_pmod.o[0].eq(trigger.output_enable & analyzer.trigger_output),
+                # user_pmod has a shared OE; drive the full bus deterministically
+                # with only PMOD A1 carrying the trigger pulse.
+                trigger_pmod.oe.eq(1),
+                trigger_pmod.o.eq(Cat(
+                    trigger.output_enable & analyzer.trigger_output,
+                    C(0, 7),
+                )),
             ]
         except ResourceError:
             pass

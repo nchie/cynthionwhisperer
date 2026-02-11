@@ -1,7 +1,7 @@
 //! Code describing the USB standard and its data types.
 
-use crc::{Crc, CRC_16_USB};
-use num_enum::{IntoPrimitive, FromPrimitive};
+use crc::{CRC_16_USB, Crc};
+use num_enum::{FromPrimitive, IntoPrimitive};
 
 fn crc16(bytes: &[u8]) -> u16 {
     const CRC16: Crc<u16> = Crc::<u16>::new(&CRC_16_USB);
@@ -31,7 +31,7 @@ pub enum Speed {
     #[default]
     High = 0,
     Full = 1,
-    Low  = 2,
+    Low = 2,
     Auto = 3,
 }
 
@@ -39,19 +39,19 @@ pub enum Speed {
 #[derive(Copy, Clone, Debug, Default, IntoPrimitive, FromPrimitive, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PID {
-    RSVD  = 0xF0,
-    OUT   = 0xE1,
-    ACK   = 0xD2,
+    RSVD = 0xF0,
+    OUT = 0xE1,
+    ACK = 0xD2,
     DATA0 = 0xC3,
-    PING  = 0xB4,
-    SOF   = 0xA5,
-    NYET  = 0x96,
+    PING = 0xB4,
+    SOF = 0xA5,
+    NYET = 0x96,
     DATA2 = 0x87,
     SPLIT = 0x78,
-    IN    = 0x69,
-    NAK   = 0x5A,
+    IN = 0x69,
+    NAK = 0x5A,
     DATA1 = 0x4B,
-    ERR   = 0x3C,
+    ERR = 0x3C,
     SETUP = 0x2D,
     STALL = 0x1E,
     MDATA = 0x0F,
@@ -82,22 +82,19 @@ pub fn validate_packet(packet: &[u8]) -> Result<PID, Option<PID>> {
         Some(pid) => {
             let len = packet.len();
             let valid = match pid {
-
                 // SOF and tokens must be three bytes, with a valid CRC5.
                 SOF | SETUP | IN | OUT | PING if len == 3 => {
-                    let data = u32::from_le_bytes(
-                        [packet[1], packet[2] & 0x07, 0, 0]);
+                    let data = u32::from_le_bytes([packet[1], packet[2] & 0x07, 0, 0]);
                     let crc = packet[2] >> 3;
                     crc == crc5(data, 11)
                 }
 
                 // SPLIT packets must be four bytes, with a valid CRC5.
                 SPLIT if len == 4 => {
-                    let data = u32::from_le_bytes(
-                        [packet[1], packet[2], packet[3] & 0x07, 0]);
+                    let data = u32::from_le_bytes([packet[1], packet[2], packet[3] & 0x07, 0]);
                     let crc = packet[3] >> 3;
                     crc == crc5(data, 19)
-                },
+                }
 
                 // Data packets must be 3 to 1027 bytes, with a valid CRC16.
                 DATA0 | DATA1 | DATA2 | MDATA if (3..=1027).contains(&len) => {
@@ -110,7 +107,7 @@ pub fn validate_packet(packet: &[u8]) -> Result<PID, Option<PID>> {
                 ACK | NAK | NYET | STALL | ERR if len == 1 => true,
 
                 // Anything else is invalid.
-                _ => false
+                _ => false,
             };
 
             if valid {

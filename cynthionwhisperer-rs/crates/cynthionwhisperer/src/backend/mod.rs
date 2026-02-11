@@ -10,15 +10,15 @@ use anyhow::{Context, Error};
 use async_trait::async_trait;
 use futures_channel::oneshot;
 use futures_lite::future::block_on;
-use futures_util::{stream::iter, StreamExt};
+use futures_util::{StreamExt, stream::iter};
 use nusb::{self, Device, DeviceInfo, Interface, transfer::Buffer};
 use once_cell::sync::Lazy;
 use portable_async_sleep::async_sleep;
 
 use crate::capture::CaptureMetadata;
-use crate::util::handle_thread_panic;
-pub use crate::usb::Speed;
 pub use crate::event::EventType;
+pub use crate::usb::Speed;
+use crate::util::handle_thread_panic;
 
 pub mod cynthion;
 pub mod transfer_queue;
@@ -29,12 +29,9 @@ type VidPid = (u16, u16);
 type ProbeFn = fn(DeviceInfo) -> Result<Box<dyn BackendDevice>, Error>;
 
 /// Map of supported (VID, PID) pairs to device-specific probe functions.
-static SUPPORTED_DEVICES: Lazy<BTreeMap<VidPid, (&str, ProbeFn)>> = Lazy::new(||
-    BTreeMap::from_iter([
-        (cynthion::VID_PID,
-            ("Cynthion", cynthion::probe as ProbeFn)),
-    ])
-);
+static SUPPORTED_DEVICES: Lazy<BTreeMap<VidPid, (&str, ProbeFn)>> = Lazy::new(|| {
+    BTreeMap::from_iter([(cynthion::VID_PID, ("Cynthion", cynthion::probe as ProbeFn))])
+});
 
 /// The result of identifying and probing a supported USB device.
 pub struct ProbeResult {
@@ -48,22 +45,17 @@ pub async fn probe(info: DeviceInfo) -> Option<ProbeResult> {
     SUPPORTED_DEVICES
         .get(&(info.vendor_id(), info.product_id()))
         .map(|(name, probe)| (name, probe(info.clone())))
-        .map(|(name, result)|
-            ProbeResult {
-                name,
-                info,
-                result: result.map_err(|e| format!("{e}"))
-            }
-        )
+        .map(|(name, result)| ProbeResult {
+            name,
+            info,
+            result: result.map_err(|e| format!("{e}")),
+        })
 }
 
 /// Scan for supported devices.
 pub async fn scan() -> Result<Vec<ProbeResult>, Error> {
     let devices = nusb::list_devices().await?;
-    Ok(iter(devices)
-        .filter_map(probe)
-        .collect::<Vec<_>>()
-        .await)
+    Ok(iter(devices).filter_map(probe).collect::<Vec<_>>().await)
 }
 
 /// A capture device connected to the system, not currently opened.
@@ -92,13 +84,13 @@ pub enum TimestampedEvent {
         timestamp_ns: u64,
         /// The type of event.
         event_type: EventType,
-    }
+    },
 }
 
 /// Handle used to stop an ongoing capture.
 pub struct BackendStop {
     stop_tx: oneshot::Sender<()>,
-    worker: JoinHandle::<()>,
+    worker: JoinHandle<()>,
 }
 
 pub type EventResult = Result<TimestampedEvent, Error>;
@@ -108,7 +100,7 @@ pub enum EventPoll {
     Ended,
 }
 
-pub trait EventIterator: Iterator<Item=EventResult> + Send + UnwindSafe {
+pub trait EventIterator: Iterator<Item = EventResult> + Send + UnwindSafe {
     fn poll_next(&mut self, timeout: Duration) -> EventPoll;
 }
 
@@ -128,7 +120,6 @@ pub struct PowerConfig {
 /// A handle to an open capture device.
 #[async_trait(?Send)]
 pub trait BackendHandle: Send + Sync {
-
     /// Which speeds this device supports.
     fn supported_speeds(&self) -> &[Speed];
 
@@ -142,8 +133,7 @@ pub trait BackendHandle: Send + Sync {
     async fn power_config(&self) -> Option<PowerConfig>;
 
     /// Set power configuration.
-    async fn set_power_config(&mut self, config: PowerConfig)
-        -> Result<(), Error>;
+    async fn set_power_config(&mut self, config: PowerConfig) -> Result<(), Error>;
 
     /// Begin capture.
     ///
@@ -153,8 +143,8 @@ pub trait BackendHandle: Send + Sync {
     async fn begin_capture(
         &mut self,
         speed: Speed,
-        data_tx: mpsc::Sender<Buffer>)
-    -> Result<TransferQueue, Error>;
+        data_tx: mpsc::Sender<Buffer>,
+    ) -> Result<TransferQueue, Error>;
 
     /// End capture.
     ///
@@ -208,7 +198,7 @@ pub trait BackendHandle: Send + Sync {
     fn start(
         &self,
         speed: Speed,
-        result_handler: Box<dyn FnOnce(Result<(), Error>) + Send>
+        result_handler: Box<dyn FnOnce(Result<(), Error>) + Send>,
     ) -> Result<(Box<dyn EventIterator>, BackendStop), Error> {
         // Channel to pass captured data to the decoder thread.
         let (data_tx, data_rx) = mpsc::channel();
@@ -223,9 +213,11 @@ pub trait BackendHandle: Send + Sync {
         let mut handle = self.duplicate();
 
         // Start worker thread to run the capture.
-        let worker = spawn(move || result_handler(
-            block_on(handle.run_capture(speed, data_tx, reuse_rx, stop_rx))
-        ));
+        let worker = spawn(move || {
+            result_handler(block_on(
+                handle.run_capture(speed, data_tx, reuse_rx, stop_rx),
+            ))
+        });
 
         // Iterator over timestamped events.
         let events = self.timestamped_events(data_rx, reuse_tx);
@@ -252,9 +244,7 @@ pub trait BackendHandle: Send + Sync {
         println!("Capture enabled, speed: {}", speed.description());
 
         // Spawn a worker thread to process the transfer queue until stopped.
-        let queue_worker = spawn(move ||
-            block_on(transfer_queue.process(reuse_rx, queue_stop_rx))
-        );
+        let queue_worker = spawn(move || block_on(transfer_queue.process(reuse_rx, queue_stop_rx)));
 
         // Wait until this thread is signalled to stop, or the stop request
         // sender is dropped.
@@ -275,8 +265,7 @@ pub trait BackendHandle: Send + Sync {
         // sending fails, assume the thread is already stopping.
         let _ = queue_stop_tx.send(());
 
-        handle_thread_panic(queue_worker.join())?
-            .context("Error in queue worker thread")?;
+        handle_thread_panic(queue_worker.join())?.context("Error in queue worker thread")?;
 
         if end_capture_result.is_ok() {
             // Run any post-capture cleanup required by the device.
@@ -299,29 +288,25 @@ impl BackendStop {
     }
 }
 
-#[cfg(not(target_os="windows"))]
-async fn claim_interface(device: &Device, interface: u8)
-    -> Result<Interface, Error>
-{
+#[cfg(not(target_os = "windows"))]
+async fn claim_interface(device: &Device, interface: u8) -> Result<Interface, Error> {
     device
         .claim_interface(interface)
         .await
         .context("Failed to claim interface")
 }
 
-#[cfg(target_os="windows")]
-async fn claim_interface(device: &Device, interface: u8)
-    -> Result<Interface, Error>
-{
+#[cfg(target_os = "windows")]
+async fn claim_interface(device: &Device, interface: u8) -> Result<Interface, Error> {
     let mut attempts = 0;
     loop {
         match device.claim_interface(interface).await {
             Err(_) if attempts < 5 => {
                 async_sleep(Duration::from_millis(50)).await;
                 attempts += 1;
-                continue
-            },
-            result => return result.context("Failed to claim interface")
+                continue;
+            }
+            result => return result.context("Failed to claim interface"),
         }
     }
 }

@@ -5,7 +5,7 @@ use pyo3::types::{PyAny, PyBytes, PyType};
 use pyo3::{Bound, Py};
 
 use ::cynthionwhisperer as cw;
-use cw::{CapturePoll, CaptureStream, PID, Speed, TimestampedEvent};
+use cw::{CapturePoll, CaptureStream, PID, Speed, TimestampedEvent, TriggerControl, TriggerStage};
 use std::time::Duration;
 
 #[pyclass(unsendable)]
@@ -29,7 +29,119 @@ impl Cynthion {
             .inner
             .start_capture(speed)
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
-        Ok(Capture { inner: Some(stream) })
+        Ok(Capture {
+            inner: Some(stream),
+        })
+    }
+
+    fn trigger_caps(&self, py: Python<'_>) -> PyResult<(u8, u8, u16)> {
+        let caps = py
+            .detach(|| block_on(self.inner.trigger_caps()))
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        Ok((
+            caps.max_stages,
+            caps.max_pattern_len,
+            caps.stage_payload_len,
+        ))
+    }
+
+    #[pyo3(signature = (enable, stage_count, output_enable=true))]
+    fn set_trigger_control(
+        &mut self,
+        py: Python<'_>,
+        enable: bool,
+        stage_count: u8,
+        output_enable: bool,
+    ) -> PyResult<()> {
+        let control = TriggerControl {
+            enable,
+            output_enable,
+            stage_count,
+        };
+        py.detach(|| block_on(self.inner.set_trigger_control(control)))
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+    }
+
+    #[pyo3(signature = (stage_index, offset, pattern, mask=None, length=None))]
+    fn set_trigger_stage(
+        &mut self,
+        py: Python<'_>,
+        stage_index: u8,
+        offset: u16,
+        pattern: &Bound<'_, PyAny>,
+        mask: Option<&Bound<'_, PyAny>>,
+        length: Option<u8>,
+    ) -> PyResult<()> {
+        let pattern = pattern
+            .extract::<Vec<u8>>()
+            .map_err(|_| PyTypeError::new_err("pattern must be bytes-like"))?;
+        if pattern.len() > 32 {
+            return Err(PyValueError::new_err("pattern must be at most 32 bytes"));
+        }
+
+        let mask = if let Some(mask) = mask {
+            let parsed = mask
+                .extract::<Vec<u8>>()
+                .map_err(|_| PyTypeError::new_err("mask must be bytes-like"))?;
+            if parsed.len() != pattern.len() {
+                return Err(PyValueError::new_err(
+                    "mask length must match pattern length",
+                ));
+            }
+            parsed
+        } else {
+            vec![0xFF; pattern.len()]
+        };
+
+        let requested_length = length.unwrap_or(pattern.len().try_into().unwrap_or(u8::MAX));
+        if usize::from(requested_length) > pattern.len() {
+            return Err(PyValueError::new_err("length cannot exceed pattern length"));
+        }
+
+        let stage = TriggerStage {
+            offset,
+            length: requested_length,
+            pattern,
+            mask,
+        };
+        py.detach(|| block_on(self.inner.set_trigger_stage(stage_index, &stage)))
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+    }
+
+    fn arm_trigger(&mut self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| block_on(self.inner.arm_trigger()))
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+    }
+
+    fn disarm_trigger(&mut self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| block_on(self.inner.disarm_trigger()))
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+    }
+
+    fn trigger_status(&self, py: Python<'_>) -> PyResult<(bool, bool, bool, bool, u8, u16, u8)> {
+        let status = py
+            .detach(|| block_on(self.inner.trigger_status()))
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        Ok((
+            status.enable,
+            status.armed,
+            status.output_enable,
+            status.output_state,
+            status.sequence_stage,
+            status.fire_count,
+            status.stage_count,
+        ))
+    }
+
+    fn get_trigger_stage(
+        &self,
+        py: Python<'_>,
+        stage_index: u8,
+    ) -> PyResult<(u16, u8, Vec<u8>, Vec<u8>)> {
+        let stage = py
+            .detach(|| block_on(self.inner.get_trigger_stage(stage_index)))
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        Ok((stage.offset, stage.length, stage.pattern, stage.mask))
     }
 }
 
@@ -56,7 +168,9 @@ impl Capture {
             py.check_signals()?;
             match next {
                 CapturePoll::Event(Ok(event)) => return event_to_pyobject(py, event).map(Some),
-                CapturePoll::Event(Err(err)) => return Err(PyRuntimeError::new_err(err.to_string())),
+                CapturePoll::Event(Err(err)) => {
+                    return Err(PyRuntimeError::new_err(err.to_string()));
+                }
                 CapturePoll::Timeout => continue,
                 CapturePoll::Ended => {
                     slf.inner.take();
@@ -83,9 +197,9 @@ impl Capture {
         data_pid: Option<&str>,
     ) -> PyResult<Option<Py<PyAny>>> {
         let direction = parse_direction(direction)?;
-        let pattern = pattern.extract::<Vec<u8>>().map_err(|_| {
-            PyTypeError::new_err("pattern must be bytes-like (e.g. b\"\\x20\")")
-        })?;
+        let pattern = pattern
+            .extract::<Vec<u8>>()
+            .map_err(|_| PyTypeError::new_err("pattern must be bytes-like (e.g. b\"\\x20\")"))?;
         let data_pid = data_pid.map(parse_data_pid).transpose()?;
         let mut last_token_direction: Option<Direction> = None;
 
@@ -107,7 +221,10 @@ impl Capture {
                     return Ok(None);
                 }
                 CapturePoll::Event(Ok(TimestampedEvent::Event { .. })) => continue,
-                CapturePoll::Event(Ok(TimestampedEvent::Packet { timestamp_ns, bytes })) => {
+                CapturePoll::Event(Ok(TimestampedEvent::Packet {
+                    timestamp_ns,
+                    bytes,
+                })) => {
                     let Some(pid) = packet_pid(&bytes) else {
                         continue;
                     };
@@ -156,7 +273,9 @@ impl Capture {
                     };
                     return Py::new(py, packet).map(|obj| Some(obj.into_any()));
                 }
-                CapturePoll::Event(Err(err)) => return Err(PyRuntimeError::new_err(err.to_string())),
+                CapturePoll::Event(Err(err)) => {
+                    return Err(PyRuntimeError::new_err(err.to_string()));
+                }
             }
         }
     }
@@ -268,7 +387,10 @@ fn payload_from_data_packet(bytes: &[u8]) -> Option<&[u8]> {
 
 fn event_to_pyobject(py: Python<'_>, event: TimestampedEvent) -> PyResult<Py<PyAny>> {
     match event {
-        TimestampedEvent::Packet { timestamp_ns, bytes } => {
+        TimestampedEvent::Packet {
+            timestamp_ns,
+            bytes,
+        } => {
             let packet = Packet {
                 timestamp_ns,
                 bytes,

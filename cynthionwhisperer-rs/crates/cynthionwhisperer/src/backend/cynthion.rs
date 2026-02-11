@@ -4,39 +4,21 @@ use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
 use std::ops::DerefMut;
-use std::time::Duration;
-use std::sync::{mpsc, Arc};
 use std::sync::mpsc::RecvTimeoutError;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use anyhow::{Context as ErrorContext, Error, bail};
 use async_lock::Mutex;
 use async_trait::async_trait;
 use nusb::{
-    self,
-    transfer::{
-        Bulk, In,
-        ControlIn,
-        ControlOut,
-        ControlType,
-        Buffer,
-        Recipient,
-    },
-    DeviceInfo,
-    Interface,
+    self, DeviceInfo, Interface,
+    transfer::{Buffer, Bulk, ControlIn, ControlOut, ControlType, In, Recipient},
 };
 
 use super::{
-    BackendDevice,
-    BackendHandle,
-    Speed,
-    EventType,
-    EventIterator,
-    EventResult,
-    EventPoll,
-    PowerConfig,
-    TimestampedEvent,
-    TransferQueue,
-    claim_interface,
+    BackendDevice, BackendHandle, EventIterator, EventPoll, EventResult, EventType, PowerConfig,
+    Speed, TimestampedEvent, TransferQueue, claim_interface,
 };
 
 use crate::capture::CaptureMetadata;
@@ -48,6 +30,25 @@ const PROTOCOL: u8 = 0x01;
 const ENDPOINT: u8 = 0x81;
 const READ_LEN: usize = 0x4000;
 const NUM_TRANSFERS: usize = 4;
+
+const REQUEST_GET_STATE: u8 = 0;
+const REQUEST_SET_STATE: u8 = 1;
+const REQUEST_GET_SPEEDS: u8 = 2;
+const REQUEST_SET_TEST_CONFIG: u8 = 3;
+const REQUEST_GET_MINOR_VERSION: u8 = 4;
+const REQUEST_GET_TRIGGER_CAPS: u8 = 5;
+const REQUEST_SET_TRIGGER_CONTROL: u8 = 6;
+const REQUEST_SET_TRIGGER_STAGE: u8 = 7;
+const REQUEST_GET_TRIGGER_STATUS: u8 = 9;
+const REQUEST_ARM_TRIGGER: u8 = 10;
+const REQUEST_DISARM_TRIGGER: u8 = 11;
+const REQUEST_GET_TRIGGER_STAGE: u8 = 12;
+
+const TRIGGER_STAGE_PAYLOAD_LEN: usize = 4 + 32 + 32;
+const TRIGGER_CONTROL_PAYLOAD_LEN: usize = 2;
+const TRIGGER_CAPS_PAYLOAD_LEN: usize = 4;
+const TRIGGER_STATUS_PAYLOAD_LEN: usize = 5;
+const TRIGGER_MAX_PATTERN_LEN: usize = 32;
 
 bitfield! {
     #[derive(Copy, Clone)]
@@ -75,13 +76,46 @@ impl TestConfig {
             Some(speed) => {
                 config.set_connect(true);
                 config.set_speed(speed);
-            },
+            }
             None => {
                 config.set_connect(false);
             }
         };
         config
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct TriggerCaps {
+    pub max_stages: u8,
+    pub max_pattern_len: u8,
+    pub stage_payload_len: u16,
+}
+
+#[derive(Clone, Debug)]
+pub struct TriggerControl {
+    pub enable: bool,
+    pub output_enable: bool,
+    pub stage_count: u8,
+}
+
+#[derive(Clone, Debug)]
+pub struct TriggerStage {
+    pub offset: u16,
+    pub length: u8,
+    pub pattern: Vec<u8>,
+    pub mask: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TriggerStatus {
+    pub enable: bool,
+    pub armed: bool,
+    pub output_enable: bool,
+    pub output_state: bool,
+    pub sequence_stage: u8,
+    pub fire_count: u16,
+    pub stage_count: u8,
 }
 
 /// A Cynthion device attached to the system.
@@ -104,6 +138,7 @@ pub struct CynthionHandle {
     speeds: Vec<Speed>,
     metadata: CaptureMetadata,
     power_sources: Option<&'static [&'static str]>,
+    protocol_minor: u8,
 }
 
 /// Converts from received data bytes to timestamped packets.
@@ -125,7 +160,7 @@ fn clk_to_ns(clk_cycles: u64) -> u64 {
 
 /// Probe a Cynthion device.
 pub fn probe(device_info: DeviceInfo) -> Result<Box<dyn BackendDevice>, Error> {
-    Ok(Box::new(CynthionDevice {device_info }))
+    Ok(Box::new(CynthionDevice { device_info }))
 }
 
 impl CynthionDevice {
@@ -134,7 +169,8 @@ impl CynthionDevice {
         use Speed::*;
 
         // Check we can open the device.
-        let device = self.device_info
+        let device = self
+            .device_info
             .open()
             .await
             .context("Failed to open device")?;
@@ -153,9 +189,7 @@ impl CynthionDevice {
                 let alt_setting_number = alt_setting.alternate_setting();
 
                 // Ignore if this is not our supported target.
-                if alt_setting.class() != CLASS ||
-                   alt_setting.subclass() != SUBCLASS
-                {
+                if alt_setting.class() != CLASS || alt_setting.subclass() != SUBCLASS {
                     continue;
                 }
 
@@ -163,16 +197,21 @@ impl CynthionDevice {
                 let protocol = alt_setting.protocol();
                 #[allow(clippy::absurd_extreme_comparisons)]
                 match PROTOCOL.cmp(&protocol) {
-                    Ordering::Less =>
-                        bail!("Analyzer gateware is newer (v{}) than supported by this version of Packetry (v{}). Please update Packetry.", protocol, PROTOCOL),
-                    Ordering::Greater =>
-                        bail!("Analyzer gateware is older (v{}) than supported by this version of Packetry (v{}). Please update gateware.", protocol, PROTOCOL),
+                    Ordering::Less => bail!(
+                        "Analyzer gateware is newer (v{}) than supported by this version of Packetry (v{}). Please update Packetry.",
+                        protocol,
+                        PROTOCOL
+                    ),
+                    Ordering::Greater => bail!(
+                        "Analyzer gateware is older (v{}) than supported by this version of Packetry (v{}). Please update gateware.",
+                        protocol,
+                        PROTOCOL
+                    ),
                     Ordering::Equal => {}
                 }
 
                 // Try to claim the interface.
-                let interface =
-                    claim_interface(&device, interface_number).await?;
+                let interface = claim_interface(&device, interface_number).await?;
 
                 // Select the required alternate, if not the default.
                 if alt_setting_number != 0 {
@@ -183,11 +222,11 @@ impl CynthionDevice {
                 }
 
                 // Read the state register.
-                let mut state = State(read_byte(&interface, 0).await?);
+                let mut state = State(read_byte(&interface, REQUEST_GET_STATE).await?);
 
                 // Fetch the available speeds.
                 let mut speeds = Vec::new();
-                let speed_byte = read_byte(&interface, 2).await?;
+                let speed_byte = read_byte(&interface, REQUEST_GET_SPEEDS).await?;
                 for speed in [Auto, High, Full, Low] {
                     if speed_byte & speed.mask() != 0 {
                         speeds.push(speed);
@@ -195,7 +234,7 @@ impl CynthionDevice {
                 }
 
                 // Fetch the minor protocol version.
-                let protocol_minor = read_byte(&interface, 4)
+                let protocol_minor = read_byte(&interface, REQUEST_GET_MINOR_VERSION)
                     .await
                     .unwrap_or(0);
 
@@ -207,10 +246,9 @@ impl CynthionDevice {
                         let minor = bcd as u8;
                         format!("Cynthion r{major}.{minor}")
                     }),
-                    iface_os: Some(
-                        format!("USB Analyzer v{protocol}.{protocol_minor}")),
+                    iface_os: Some(format!("USB Analyzer v{protocol}.{protocol_minor}")),
                     iface_snaplen: Some(NonZeroU32::new(0xFFFF).unwrap()),
-                    .. Default::default()
+                    ..Default::default()
                 };
 
                 // Translate the power configuration.
@@ -220,25 +258,24 @@ impl CynthionDevice {
                     None
                 } else {
                     // Analyzer supports power control.
-                    let (source_index, on_now) =
-                        if !state.power_control_enable() {
-                            // Power control has not yet been set up.
-                            // Set the initial configuration.
-                            state.set_power_control_enable(true);
-                            state.set_target_c_vbus_en(true);
-                            state.set_control_vbus_en(false);
-                            state.set_aux_vbus_en(false);
-                            state.set_target_a_discharge(false);
-                            (0, true)
-                        } else if state.target_c_vbus_en() {
-                            (0, true)
-                        } else if state.control_vbus_en() {
-                            (1, true)
-                        } else if state.aux_vbus_en() {
-                            (2, true)
-                        } else {
-                            (0, false)
-                        };
+                    let (source_index, on_now) = if !state.power_control_enable() {
+                        // Power control has not yet been set up.
+                        // Set the initial configuration.
+                        state.set_power_control_enable(true);
+                        state.set_target_c_vbus_en(true);
+                        state.set_control_vbus_en(false);
+                        state.set_aux_vbus_en(false);
+                        state.set_target_a_discharge(false);
+                        (0, true)
+                    } else if state.target_c_vbus_en() {
+                        (0, true)
+                    } else if state.control_vbus_en() {
+                        (1, true)
+                    } else if state.aux_vbus_en() {
+                        (2, true)
+                    } else {
+                        (0, false)
+                    };
                     Some(PowerConfig {
                         source_index,
                         on_now,
@@ -257,17 +294,16 @@ impl CynthionDevice {
 
                 // Now we have a usable device.
                 return Ok(CynthionHandle {
-                    inner: Arc::new(Mutex::new(
-                        CynthionInner {
-                            interface,
-                            state,
-                            power,
-                        }
-                    )),
+                    inner: Arc::new(Mutex::new(CynthionInner {
+                        interface,
+                        state,
+                        power,
+                    })),
                     speeds,
                     metadata,
                     power_sources,
-                })
+                    protocol_minor,
+                });
             }
         }
 
@@ -301,44 +337,37 @@ impl BackendHandle for CynthionHandle {
     }
 
     async fn power_config(&self) -> Option<PowerConfig> {
-        self.inner()
-            .await
-            .power
-            .clone()
+        self.inner().await.power.clone()
     }
 
-    async fn set_power_config(&mut self, power: PowerConfig)
-        -> Result<(), Error>
-    {
-        self.inner()
-            .await
-            .set_power_config(power)
-            .await
+    async fn set_power_config(&mut self, power: PowerConfig) -> Result<(), Error> {
+        self.inner().await.set_power_config(power).await
     }
 
     async fn begin_capture(
         &mut self,
         speed: Speed,
         data_tx: mpsc::Sender<Buffer>,
-    ) -> Result<TransferQueue, Error>
-    {
+    ) -> Result<TransferQueue, Error> {
         let mut inner = self.inner().await;
 
         let endpoint = match inner.interface.endpoint::<Bulk, In>(ENDPOINT) {
             Ok(endpoint) => endpoint,
-            Err(_) => bail!("Failed to claim endpoint {ENDPOINT}")
+            Err(_) => bail!("Failed to claim endpoint {ENDPOINT}"),
         };
 
         inner.start_capture(speed).await?;
 
-        Ok(TransferQueue::new(endpoint, data_tx, NUM_TRANSFERS, READ_LEN))
+        Ok(TransferQueue::new(
+            endpoint,
+            data_tx,
+            NUM_TRANSFERS,
+            READ_LEN,
+        ))
     }
 
     async fn end_capture(&mut self) -> Result<(), Error> {
-        self.inner()
-            .await
-            .stop_capture()
-            .await
+        self.inner().await.stop_capture().await
     }
 
     async fn post_capture(&mut self) -> Result<(), Error> {
@@ -350,15 +379,13 @@ impl BackendHandle for CynthionHandle {
         data_rx: mpsc::Receiver<Buffer>,
         reuse_tx: mpsc::Sender<Buffer>,
     ) -> Box<dyn EventIterator> {
-        Box::new(
-            CynthionStream {
-                data_rx,
-                reuse_tx,
-                buffer: VecDeque::new(),
-                padding_due: false,
-                total_clk_cycles: 0,
-            }
-        )
+        Box::new(CynthionStream {
+            data_rx,
+            reuse_tx,
+            buffer: VecDeque::new(),
+            padding_due: false,
+            total_clk_cycles: 0,
+        })
     }
 
     fn duplicate(&self) -> Box<dyn BackendHandle> {
@@ -367,7 +394,7 @@ impl BackendHandle for CynthionHandle {
 }
 
 impl CynthionInner {
-    async fn start_capture (&mut self, speed: Speed) -> Result<(), Error> {
+    async fn start_capture(&mut self, speed: Speed) -> Result<(), Error> {
         self.state.set_speed(speed);
         self.state.set_enable(true);
         if let Some(power) = &mut self.power {
@@ -380,7 +407,7 @@ impl CynthionInner {
                 power.on_now = true;
             }
         }
-        self.write_request(1, self.state.0).await
+        self.write_request(REQUEST_SET_STATE, self.state.0).await
     }
 
     async fn stop_capture(&mut self) -> Result<(), Error> {
@@ -394,12 +421,10 @@ impl CynthionInner {
                 power.on_now = false;
             }
         }
-        self.write_request(1, self.state.0).await
+        self.write_request(REQUEST_SET_STATE, self.state.0).await
     }
 
-    async fn set_power_config(&mut self, power: PowerConfig)
-        -> Result<(), Error>
-    {
+    async fn set_power_config(&mut self, power: PowerConfig) -> Result<(), Error> {
         let index = power.source_index;
         let on = power.on_now;
         self.state.set_power_control_enable(true);
@@ -408,19 +433,27 @@ impl CynthionInner {
         self.state.set_aux_vbus_en(on && index == 2);
         self.state.set_target_a_discharge(!on);
         self.power = Some(power);
-        self.write_request(1, self.state.0).await
+        self.write_request(REQUEST_SET_STATE, self.state.0).await
     }
 
-    async fn write_request(&mut self, request: u8, value: u8)
-        -> Result<(), Error>
-    {
+    async fn write_request(&mut self, request: u8, value: u8) -> Result<(), Error> {
+        self.write_request_with_data(request, u16::from(value), &[])
+            .await
+    }
+
+    async fn write_request_with_data(
+        &mut self,
+        request: u8,
+        value: u16,
+        data: &[u8],
+    ) -> Result<(), Error> {
         let control = ControlOut {
             control_type: ControlType::Vendor,
             recipient: Recipient::Interface,
             request,
-            value: u16::from(value),
+            value,
             index: self.interface.interface_number() as u16,
-            data: &[],
+            data,
         };
         let timeout = Duration::from_secs(1);
         self.interface
@@ -429,22 +462,216 @@ impl CynthionInner {
             .context("Write request failed")?;
         Ok(())
     }
+
+    async fn read_request(
+        &mut self,
+        request: u8,
+        value: u16,
+        length: usize,
+    ) -> Result<Vec<u8>, Error> {
+        let control = ControlIn {
+            control_type: ControlType::Vendor,
+            recipient: Recipient::Interface,
+            request,
+            value,
+            index: self.interface.interface_number() as u16,
+            length: u16::try_from(length).unwrap_or(u16::MAX),
+        };
+        let timeout = Duration::from_secs(1);
+        let buf = self
+            .interface
+            .control_in(control, timeout)
+            .await
+            .context("Read request failed")?;
+        Ok(buf.to_vec())
+    }
 }
 
 impl CynthionHandle {
-    async fn inner(&self) -> impl DerefMut<Target=CynthionInner> + use<'_> {
+    async fn inner(&self) -> impl DerefMut<Target = CynthionInner> + use<'_> {
         self.inner.lock().await
     }
 
-    pub async fn configure_test_device(&mut self, speed: Option<Speed>)
-        -> Result<(), Error>
-    {
+    fn ensure_trigger_supported(&self) -> Result<(), Error> {
+        if self.protocol_minor < 2 {
+            bail!("Trigger configuration not supported by this gateware version.")
+        }
+        Ok(())
+    }
+
+    pub async fn configure_test_device(&mut self, speed: Option<Speed>) -> Result<(), Error> {
         let test_config = TestConfig::new(speed);
         self.inner()
             .await
-            .write_request(3, test_config.0)
+            .write_request(REQUEST_SET_TEST_CONFIG, test_config.0)
             .await
             .context("Failed to set test device configuration")
+    }
+
+    pub async fn trigger_caps(&self) -> Result<TriggerCaps, Error> {
+        self.ensure_trigger_supported()?;
+        let mut inner = self.inner().await;
+        let data = inner
+            .read_request(REQUEST_GET_TRIGGER_CAPS, 0, 64)
+            .await
+            .context("Failed to read trigger capabilities")?;
+        if data.len() != TRIGGER_CAPS_PAYLOAD_LEN {
+            bail!(
+                "Expected {TRIGGER_CAPS_PAYLOAD_LEN}-byte trigger caps response, got {}",
+                data.len()
+            );
+        }
+        Ok(TriggerCaps {
+            max_stages: data[0],
+            max_pattern_len: data[1],
+            stage_payload_len: u16::from_le_bytes([data[2], data[3]]),
+        })
+    }
+
+    pub async fn set_trigger_control(&mut self, control: TriggerControl) -> Result<(), Error> {
+        self.ensure_trigger_supported()?;
+
+        let max_stages = self.trigger_caps().await?.max_stages;
+        let stage_count = control.stage_count.min(max_stages);
+        let mut flags = 0u8;
+        if control.enable {
+            flags |= 0b0000_0001;
+        }
+        if control.output_enable {
+            flags |= 0b0000_0010;
+        }
+        let payload = [flags, stage_count];
+        debug_assert_eq!(payload.len(), TRIGGER_CONTROL_PAYLOAD_LEN);
+
+        let mut inner = self.inner().await;
+        inner
+            .write_request_with_data(REQUEST_SET_TRIGGER_CONTROL, 0, &payload)
+            .await
+            .context("Failed to set trigger control")
+    }
+
+    pub async fn set_trigger_stage(
+        &mut self,
+        stage_index: u8,
+        stage: &TriggerStage,
+    ) -> Result<(), Error> {
+        self.ensure_trigger_supported()?;
+
+        let caps = self.trigger_caps().await?;
+        if stage_index >= caps.max_stages {
+            bail!(
+                "Stage index {} exceeds supported stage count {}",
+                stage_index,
+                caps.max_stages
+            );
+        }
+
+        let max_len = usize::from(caps.max_pattern_len).min(TRIGGER_MAX_PATTERN_LEN);
+        if stage.pattern.len() < usize::from(stage.length) {
+            bail!(
+                "Stage pattern length ({}) is shorter than stage length ({})",
+                stage.pattern.len(),
+                stage.length
+            );
+        }
+        if stage.mask.len() < usize::from(stage.length) {
+            bail!(
+                "Stage mask length ({}) is shorter than stage length ({})",
+                stage.mask.len(),
+                stage.length
+            );
+        }
+
+        let clamped_len = usize::from(stage.length).min(max_len);
+        let mut payload = vec![0u8; TRIGGER_STAGE_PAYLOAD_LEN];
+        let [offset_lo, offset_hi] = stage.offset.to_le_bytes();
+        payload[0] = offset_lo;
+        payload[1] = offset_hi;
+        payload[2] = u8::try_from(clamped_len).unwrap_or(u8::MAX);
+        payload[3] = 0;
+        payload[4..(4 + clamped_len)].copy_from_slice(&stage.pattern[..clamped_len]);
+        payload[(4 + TRIGGER_MAX_PATTERN_LEN)..(4 + TRIGGER_MAX_PATTERN_LEN + clamped_len)]
+            .copy_from_slice(&stage.mask[..clamped_len]);
+        for index in clamped_len..TRIGGER_MAX_PATTERN_LEN {
+            payload[4 + TRIGGER_MAX_PATTERN_LEN + index] = 0xFF;
+        }
+
+        let mut inner = self.inner().await;
+        inner
+            .write_request_with_data(REQUEST_SET_TRIGGER_STAGE, u16::from(stage_index), &payload)
+            .await
+            .context("Failed to set trigger stage")
+    }
+
+    pub async fn get_trigger_stage(&self, stage_index: u8) -> Result<TriggerStage, Error> {
+        self.ensure_trigger_supported()?;
+        let mut inner = self.inner().await;
+        let data = inner
+            .read_request(REQUEST_GET_TRIGGER_STAGE, u16::from(stage_index), 256)
+            .await
+            .context("Failed to read trigger stage")?;
+        if data.len() != TRIGGER_STAGE_PAYLOAD_LEN {
+            bail!(
+                "Expected {TRIGGER_STAGE_PAYLOAD_LEN}-byte trigger stage response, got {}",
+                data.len()
+            );
+        }
+
+        let offset = u16::from_le_bytes([data[0], data[1]]);
+        let length = data[2].min(TRIGGER_MAX_PATTERN_LEN as u8);
+        let stage_len = usize::from(length);
+        let pattern = data[4..(4 + stage_len)].to_vec();
+        let mask =
+            data[(4 + TRIGGER_MAX_PATTERN_LEN)..(4 + TRIGGER_MAX_PATTERN_LEN + stage_len)].to_vec();
+        Ok(TriggerStage {
+            offset,
+            length,
+            pattern,
+            mask,
+        })
+    }
+
+    pub async fn trigger_status(&self) -> Result<TriggerStatus, Error> {
+        self.ensure_trigger_supported()?;
+        let mut inner = self.inner().await;
+        let data = inner
+            .read_request(REQUEST_GET_TRIGGER_STATUS, 0, 64)
+            .await
+            .context("Failed to read trigger status")?;
+        if data.len() != TRIGGER_STATUS_PAYLOAD_LEN {
+            bail!(
+                "Expected {TRIGGER_STATUS_PAYLOAD_LEN}-byte trigger status response, got {}",
+                data.len()
+            );
+        }
+        let flags = data[0];
+        Ok(TriggerStatus {
+            enable: (flags & 0b0000_0001) != 0,
+            armed: (flags & 0b0000_0010) != 0,
+            output_enable: (flags & 0b0000_0100) != 0,
+            output_state: (flags & 0b0000_1000) != 0,
+            sequence_stage: data[1],
+            fire_count: u16::from_le_bytes([data[2], data[3]]),
+            stage_count: data[4],
+        })
+    }
+
+    pub async fn arm_trigger(&mut self) -> Result<(), Error> {
+        self.ensure_trigger_supported()?;
+        let mut inner = self.inner().await;
+        inner
+            .write_request_with_data(REQUEST_ARM_TRIGGER, 0, &[])
+            .await
+            .context("Failed to arm trigger")
+    }
+
+    pub async fn disarm_trigger(&mut self) -> Result<(), Error> {
+        self.ensure_trigger_supported()?;
+        let mut inner = self.inner().await;
+        inner
+            .write_request_with_data(REQUEST_DISARM_TRIGGER, 0, &[])
+            .await
+            .context("Failed to disarm trigger")
     }
 }
 
@@ -468,7 +695,6 @@ async fn read_byte(interface: &Interface, request: u8) -> Result<u8, Error> {
     }
     Ok(buf[0])
 }
-
 
 enum WaitResult {
     Received,
@@ -518,7 +744,10 @@ impl CynthionStream {
                 Err(RecvTimeoutError::Timeout) => return WaitResult::Timeout,
                 Err(RecvTimeoutError::Disconnected) => return WaitResult::Ended,
             },
-            None => self.data_rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            None => self
+                .data_rx
+                .recv()
+                .map_err(|_| RecvTimeoutError::Disconnected),
         };
 
         match recv_result {
@@ -542,7 +771,7 @@ impl CynthionStream {
                 return None;
             } else {
                 self.buffer.pop_front();
-                self.padding_due= false;
+                self.padding_due = false;
             }
         }
 
@@ -567,7 +796,7 @@ impl CynthionStream {
                     return Some(Event {
                         timestamp_ns: clk_to_ns(self.total_clk_cycles),
                         event_type,
-                    })
+                    });
                 }
             } else {
                 // This is a packet, handle it below.
@@ -576,8 +805,7 @@ impl CynthionStream {
         }
 
         // Do we have all the data for the next packet?
-        let packet_len = u16::from_be_bytes(
-            [self.buffer[0], self.buffer[1]]) as usize;
+        let packet_len = u16::from_be_bytes([self.buffer[0], self.buffer[1]]) as usize;
         if self.buffer.len() <= 4 + packet_len {
             return None;
         }
@@ -602,8 +830,7 @@ impl CynthionStream {
 
     fn update_cycle_count(&mut self) {
         // Decode the cycle count.
-        let clk_cycles = u16::from_be_bytes(
-            [self.buffer[2], self.buffer[3]]);
+        let clk_cycles = u16::from_be_bytes([self.buffer[2], self.buffer[3]]);
 
         // Update our running total.
         self.total_clk_cycles += clk_cycles as u64;
@@ -615,7 +842,7 @@ impl Speed {
         use Speed::*;
         match self {
             Auto => 0b0001,
-            Low  => 0b0010,
+            Low => 0b0010,
             Full => 0b0100,
             High => 0b1000,
         }

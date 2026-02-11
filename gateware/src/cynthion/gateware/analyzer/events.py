@@ -50,3 +50,4 @@ class USBAnalyzerEvent(IntEnum):
     SUSPEND             = 28
     RESUME              = 29
     LS_KEEPALIVE        = 30
+    TRIGGER_FIRED       = 31

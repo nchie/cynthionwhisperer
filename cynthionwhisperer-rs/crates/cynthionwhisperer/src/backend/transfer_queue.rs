@@ -4,8 +4,11 @@ use std::sync::mpsc;
 
 use anyhow::{Context, Error};
 use futures_channel::oneshot;
-use futures_util::{future::FusedFuture, FutureExt, select_biased};
-use nusb::{Endpoint, transfer::{Buffer, Bulk, In}};
+use futures_util::{FutureExt, future::FusedFuture, select_biased};
+use nusb::{
+    Endpoint,
+    transfer::{Buffer, Bulk, In},
+};
 
 /// A queue of inbound USB transfers, feeding received data to a channel.
 pub struct TransferQueue {
@@ -20,13 +23,17 @@ impl TransferQueue {
         mut endpoint: Endpoint<Bulk, In>,
         data_tx: mpsc::Sender<Buffer>,
         num_transfers: usize,
-        transfer_length: usize
+        transfer_length: usize,
     ) -> TransferQueue {
         while endpoint.pending() < num_transfers {
             let request = endpoint.allocate(transfer_length);
             endpoint.submit(request);
         }
-        TransferQueue { endpoint, data_tx, transfer_length }
+        TransferQueue {
+            endpoint,
+            data_tx,
+            transfer_length,
+        }
     }
 
     /// Process the queue, sending data to the channel until stopped.

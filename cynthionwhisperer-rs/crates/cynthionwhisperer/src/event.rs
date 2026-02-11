@@ -34,6 +34,8 @@ pub enum EventType {
     Resume,
     /// Low Speed keepalive detected.
     LsKeepalive,
+    /// Trigger condition fired.
+    TriggerFired,
 }
 
 /// USB line states
@@ -71,9 +73,9 @@ pub enum StopReason {
 }
 
 use EventType::*;
-use StopReason::*;
-use Speed::*;
 use LineState::*;
+use Speed::*;
+use StopReason::*;
 
 impl std::fmt::Display for EventType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -89,7 +91,7 @@ impl std::fmt::Display for EventType {
             SpeedChange(Full) => "Speed changed to Full Speed (12 Mbps)",
             SpeedChange(Low) => "Speed changed to Low Speed (1.5 Mbps)",
             SpeedChange(Auto) => "Speed changed to automatic selection",
-            LineStateChange(SE0)  => "SE0 line state detected",
+            LineStateChange(SE0) => "SE0 line state detected",
             LineStateChange(ChirpJ) => "Chirp J state detected",
             LineStateChange(ChirpK) => "Chirp K state detected",
             LineStateChange(ChirpSE1) => "Chirp SE1 state detected",
@@ -99,15 +101,16 @@ impl std::fmt::Display for EventType {
             LineStateChange(FsK) => "Full Speed resume state detected",
             LineStateChange(SE1) => "Invalid SE1 line state detected",
             VbusInvalid => "VBUS voltage became invalid",
-            VbusValid   => "VBUS voltage became valid",
+            VbusValid => "VBUS voltage became valid",
             LsAttach => "Device attached at Low Speed",
             FsAttach => "Device attached at Full Speed",
             BusReset => "Bus reset",
             DeviceChirpValid => "Device HS chirp validated",
             HostChirpValid => "Host HS chirp validated",
-            Suspend  => "Bus entered suspend",
-            Resume   => "Resume signal detected",
+            Suspend => "Bus entered suspend",
+            Resume => "Resume signal detected",
             LsKeepalive => "Low Speed keepalive detected",
+            TriggerFired => "Trigger fired",
         })
     }
 }
@@ -115,50 +118,51 @@ impl std::fmt::Display for EventType {
 impl EventType {
     pub fn code(&self) -> u8 {
         match self {
-            CaptureStop(Requested)    => 1,
-            CaptureStop(BufferFull)   => 2,
-            CaptureStop(Error)        => 3,
-            CaptureStart(High)        => 4,
-            CaptureStart(Full)        => 5,
-            CaptureStart(Low)         => 6,
-            CaptureStart(Auto)        => 7,
-            SpeedChange(High)         => 8,
-            SpeedChange(Full)         => 9,
-            SpeedChange(Low)          => 10,
-            SpeedChange(Auto)         => 11,
-            LineStateChange(SE0)      => 12,
-            LineStateChange(ChirpJ)   => 13,
-            LineStateChange(ChirpK)   => 14,
+            CaptureStop(Requested) => 1,
+            CaptureStop(BufferFull) => 2,
+            CaptureStop(Error) => 3,
+            CaptureStart(High) => 4,
+            CaptureStart(Full) => 5,
+            CaptureStart(Low) => 6,
+            CaptureStart(Auto) => 7,
+            SpeedChange(High) => 8,
+            SpeedChange(Full) => 9,
+            SpeedChange(Low) => 10,
+            SpeedChange(Auto) => 11,
+            LineStateChange(SE0) => 12,
+            LineStateChange(ChirpJ) => 13,
+            LineStateChange(ChirpK) => 14,
             LineStateChange(ChirpSE1) => 15,
-            LineStateChange(LsJ)      => 16,
-            LineStateChange(LsK)      => 17,
-            LineStateChange(FsJ)      => 18,
-            LineStateChange(FsK)      => 19,
-            LineStateChange(SE1)      => 20,
-            VbusInvalid               => 21,
-            VbusValid                 => 22,
-            LsAttach                  => 23,
-            FsAttach                  => 24,
-            BusReset                  => 25,
-            DeviceChirpValid          => 26,
-            HostChirpValid            => 27,
-            Suspend                   => 28,
-            Resume                    => 29,
-            LsKeepalive               => 30,
+            LineStateChange(LsJ) => 16,
+            LineStateChange(LsK) => 17,
+            LineStateChange(FsJ) => 18,
+            LineStateChange(FsK) => 19,
+            LineStateChange(SE1) => 20,
+            VbusInvalid => 21,
+            VbusValid => 22,
+            LsAttach => 23,
+            FsAttach => 24,
+            BusReset => 25,
+            DeviceChirpValid => 26,
+            HostChirpValid => 27,
+            Suspend => 28,
+            Resume => 29,
+            LsKeepalive => 30,
+            TriggerFired => 31,
         }
     }
 
     pub fn from_code(code: u8) -> Option<Self> {
         Some(match code {
-            1  => CaptureStop(Requested),
-            2  => CaptureStop(BufferFull),
-            3  => CaptureStop(Error),
-            4  => CaptureStart(High),
-            5  => CaptureStart(Full),
-            6  => CaptureStart(Low),
-            7  => CaptureStart(Auto),
-            8  => SpeedChange(High),
-            9  => SpeedChange(Full),
+            1 => CaptureStop(Requested),
+            2 => CaptureStop(BufferFull),
+            3 => CaptureStop(Error),
+            4 => CaptureStart(High),
+            5 => CaptureStart(Full),
+            6 => CaptureStart(Low),
+            7 => CaptureStart(Auto),
+            8 => SpeedChange(High),
+            9 => SpeedChange(Full),
             10 => SpeedChange(Low),
             11 => SpeedChange(Auto),
             12 => LineStateChange(SE0),
@@ -180,7 +184,8 @@ impl EventType {
             28 => Suspend,
             29 => Resume,
             30 => LsKeepalive,
-            _  => return None
+            31 => TriggerFired,
+            _ => return None,
         })
     }
 }

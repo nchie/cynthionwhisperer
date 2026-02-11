@@ -8,7 +8,7 @@
 
 import unittest
 
-from amaranth          import Signal, Module, Elaboratable, Memory, Record, Mux, Cat, C
+from amaranth          import Signal, Module, Elaboratable, Memory, Record, Mux, Cat, C, Array
 
 from luna.gateware.stream import StreamInterface
 from luna.gateware.test   import LunaGatewareTestCase, usb_domain_test_case
@@ -16,6 +16,45 @@ from luna.gateware.test   import LunaGatewareTestCase, usb_domain_test_case
 from .fifo import Stream16to8, StreamFIFO, AsyncFIFOReadReset
 from .speeds import USBAnalyzerSpeed
 from .events import USBAnalyzerEvent
+
+
+TRIGGER_MAX_STAGES = 8
+TRIGGER_MAX_PATTERN_BYTES = 32
+
+
+class _DefaultTriggerConfig:
+    """Fallback trigger config used when top-level trigger wiring is omitted."""
+
+    def __init__(self):
+        self.max_stages = TRIGGER_MAX_STAGES
+        self.max_pattern = TRIGGER_MAX_PATTERN_BYTES
+        self.pattern_bits = (self.max_pattern - 1).bit_length()
+        self.stage_bits = (self.max_stages - 1).bit_length()
+
+        self.enable = Signal(reset=0)
+        self.armed = Signal(reset=0)
+        self.output_enable = Signal(reset=0)
+        self.stage_count = Signal(range(self.max_stages + 1), reset=0)
+
+        self.stage_offsets = Array(
+            Signal(16, name=f"default_trigger_stage_{i}_offset")
+            for i in range(self.max_stages)
+        )
+        self.stage_lengths = Array(
+            Signal(8, name=f"default_trigger_stage_{i}_length")
+            for i in range(self.max_stages)
+        )
+        self.patterns_flat = Array(
+            Signal(8, name=f"default_trigger_pattern_{i}")
+            for i in range(self.max_stages * self.max_pattern)
+        )
+        self.masks_flat = Array(
+            Signal(8, reset=0xFF, name=f"default_trigger_mask_{i}")
+            for i in range(self.max_stages * self.max_pattern)
+        )
+
+        self.arm_strobe = Signal()
+        self.disarm_strobe = Signal()
 
 
 class USBAnalyzer(Elaboratable):
@@ -65,7 +104,16 @@ class USBAnalyzer(Elaboratable):
     # Support a maximum payload size of 1024B, plus a 1-byte PID and a 2-byte CRC16.
     MAX_PACKET_SIZE_BYTES = 1024 + 1 + 2
 
-    def __init__(self, utmi_interface, session_valid, speed_selection, event_strobe, event_code, mem_depth=4096):
+    def __init__(
+        self,
+        utmi_interface,
+        session_valid,
+        speed_selection,
+        event_strobe,
+        event_code,
+        mem_depth=4096,
+        trigger=None,
+    ):
         """
         Parameters:
             utmi_interface -- A record or elaboratable that presents a UTMI interface.
@@ -76,6 +124,7 @@ class USBAnalyzer(Elaboratable):
         self.speed_selection = speed_selection
         self.event_strobe = event_strobe
         self.event_code = event_code
+        self.trigger = trigger if trigger is not None else _DefaultTriggerConfig()
 
         assert (mem_depth % 2) == 0, "mem_depth must be a power of 2"
 
@@ -95,6 +144,11 @@ class USBAnalyzer(Elaboratable):
         self.overrun        = Signal()
         self.capturing      = Signal()
         self.starting       = Signal()
+
+        self.trigger_toggle_out = Signal()
+        self.trigger_fire_strobe = Signal()
+        self.trigger_sequence_stage = Signal(range(self.trigger.max_stages + 1))
+        self.trigger_fire_count = Signal(16)
 
 
     def elaborate(self, platform):
@@ -125,6 +179,54 @@ class USBAnalyzer(Elaboratable):
         write_packet    = Signal()
         write_header    = Signal()
         write_event     = Signal()
+
+        # Trigger matching state.
+        packet_byte_index = Signal(range(self.MAX_PACKET_SIZE_BYTES + 1))
+        stage_mismatch = Signal()
+        stage_match_count = Signal(range(self.trigger.max_pattern + 1))
+        seq_expected_stage = Signal(range(self.trigger.max_stages + 1))
+        pending_trigger_event = Signal()
+
+        active_stage_index = Signal(range(self.trigger.max_stages))
+        active_stage_offset = Signal(16)
+        active_stage_len_raw = Signal(8)
+        active_stage_len = Signal(8)
+        active_stage_valid = Signal()
+
+        stage_window_hit = Signal()
+        pattern_index = Signal(range(self.trigger.max_pattern))
+        pattern_flat_index = Signal(range(self.trigger.max_stages * self.trigger.max_pattern))
+        expected_byte = Signal(8)
+        expected_mask = Signal(8)
+
+        m.d.comb += [
+            active_stage_index.eq(seq_expected_stage[0:self.trigger.stage_bits]),
+            active_stage_offset.eq(self.trigger.stage_offsets[active_stage_index]),
+            active_stage_len_raw.eq(self.trigger.stage_lengths[active_stage_index]),
+            active_stage_len.eq(
+                Mux(
+                    active_stage_len_raw > self.trigger.max_pattern,
+                    self.trigger.max_pattern,
+                    active_stage_len_raw,
+                )
+            ),
+            active_stage_valid.eq(
+                self.trigger.enable &
+                self.trigger.armed &
+                (seq_expected_stage < self.trigger.stage_count) &
+                (seq_expected_stage < self.trigger.max_stages)
+            ),
+            stage_window_hit.eq(
+                active_stage_valid &
+                (packet_byte_index >= active_stage_offset) &
+                (packet_byte_index < (active_stage_offset + active_stage_len))
+            ),
+            pattern_index.eq(packet_byte_index - active_stage_offset),
+            pattern_flat_index.eq(active_stage_index * self.trigger.max_pattern + pattern_index),
+            expected_byte.eq(self.trigger.patterns_flat[pattern_flat_index]),
+            expected_mask.eq(self.trigger.masks_flat[pattern_flat_index]),
+            self.trigger_sequence_stage.eq(seq_expected_stage),
+        ]
 
         # Use the FIFO as our stream source.
         m.d.comb += self.stream.payload.eq(mem_read_port.data)
@@ -179,7 +281,10 @@ class USBAnalyzer(Elaboratable):
 
         # Timestamp counter.
         current_time = Signal(16)
-        m.d.usb += current_time.eq(current_time + 1)
+        m.d.usb += [
+            current_time.eq(current_time + 1),
+            self.trigger_fire_strobe.eq(0),
+        ]
 
         #
         # Core analysis FSM.
@@ -195,7 +300,14 @@ class USBAnalyzer(Elaboratable):
 
             # AWAIT_START: wait for capture to be enabled, but don't start mid-packet.
             with m.State("AWAIT_START"):
-                m.d.usb += current_time.eq(0)
+                m.d.usb += [
+                    current_time.eq(0),
+                    packet_byte_index.eq(0),
+                    stage_mismatch.eq(0),
+                    stage_match_count.eq(0),
+                    seq_expected_stage.eq(0),
+                    pending_trigger_event.eq(0),
+                ]
                 with m.If(self.capture_enable & ~self.utmi.rx_active):
                     # Capture is being started.
                     m.next = "AWAIT_PACKET"
@@ -211,6 +323,16 @@ class USBAnalyzer(Elaboratable):
 
             # AWAIT_PACKET: capture is enabled, wait for a packet to start.
             with m.State("AWAIT_PACKET"):
+                with m.If(
+                    self.trigger.disarm_strobe |
+                    ~self.trigger.enable |
+                    ~self.trigger.armed
+                ):
+                    m.d.usb += seq_expected_stage.eq(0)
+
+                with m.If(self.trigger.arm_strobe):
+                    m.d.usb += seq_expected_stage.eq(0)
+
                 with m.If(~self.capture_enable):
                     # Capture is being stopped.
                     m.next = "AWAIT_START"
@@ -218,6 +340,15 @@ class USBAnalyzer(Elaboratable):
                     m.d.comb += [
                         write_event        .eq(1),
                         event_code         .eq(USBAnalyzerEvent.CAPTURE_STOP_NORMAL),
+                    ]
+                with m.Elif(pending_trigger_event):
+                    m.d.comb += [
+                        write_event        .eq(1),
+                        event_code         .eq(USBAnalyzerEvent.TRIGGER_FIRED),
+                    ]
+                    m.d.usb += [
+                        pending_trigger_event.eq(0),
+                        current_time.eq(1),
                     ]
                 with m.Elif(
                     self.utmi.rx_active &
@@ -230,6 +361,9 @@ class USBAnalyzer(Elaboratable):
                         packet_size        .eq(0),
                         packet_time        .eq(current_time),
                         current_time       .eq(0),
+                        packet_byte_index  .eq(0),
+                        stage_mismatch     .eq(0),
+                        stage_match_count  .eq(0),
                     ]
                 with m.Elif(self.event_strobe):
                     # Event detected externally.
@@ -263,7 +397,16 @@ class USBAnalyzer(Elaboratable):
                 with m.If(byte_received):
                     m.d.usb += [
                         packet_size        .eq(packet_size + 1),
+                        packet_byte_index  .eq(packet_byte_index + 1),
                     ]
+
+                    with m.If(stage_window_hit):
+                        m.d.usb += stage_match_count.eq(stage_match_count + 1)
+                        with m.If(
+                            (self.utmi.rx_data & expected_mask) !=
+                            (expected_byte & expected_mask)
+                        ):
+                            m.d.usb += stage_mismatch.eq(1)
 
                     # If this would be filling up our data memory,
                     # move to the OVERRUN state.
@@ -275,6 +418,26 @@ class USBAnalyzer(Elaboratable):
                     m.d.comb += [
                         write_header .eq(1),
                     ]
+
+                    with m.If(
+                        active_stage_valid &
+                        (active_stage_len > 0) &
+                        ~stage_mismatch &
+                        (stage_match_count == active_stage_len) &
+                        (packet_size >= (active_stage_offset + active_stage_len))
+                    ):
+                        with m.If((seq_expected_stage + 1) >= self.trigger.stage_count):
+                            m.d.usb += [
+                                seq_expected_stage.eq(0),
+                                self.trigger_fire_strobe.eq(1),
+                                self.trigger_fire_count.eq(self.trigger_fire_count + 1),
+                                pending_trigger_event.eq(1),
+                            ]
+                            with m.If(self.trigger.output_enable):
+                                m.d.usb += self.trigger_toggle_out.eq(~self.trigger_toggle_out)
+                        with m.Else():
+                            m.d.usb += seq_expected_stage.eq(seq_expected_stage + 1)
+
                     m.next = "AWAIT_PACKET"
 
 
@@ -623,6 +786,78 @@ class USBAnalyzerTest(USBAnalyzerTestBase):
 
         # Validate that we get all of the expected bytes.
         yield from self.expect_data(start_event + stop_event)
+
+
+    @usb_domain_test_case
+    def test_trigger_single_stage_match(self):
+        # Configure one trigger stage:
+        # Match bytes [AA BB CC] starting at packet offset 1.
+        yield self.analyzer.trigger.enable.eq(1)
+        yield self.analyzer.trigger.armed.eq(1)
+        yield self.analyzer.trigger.output_enable.eq(1)
+        yield self.analyzer.trigger.stage_count.eq(1)
+        yield self.analyzer.trigger.stage_offsets[0].eq(1)
+        yield self.analyzer.trigger.stage_lengths[0].eq(3)
+        yield self.analyzer.trigger.patterns_flat[0].eq(0xAA)
+        yield self.analyzer.trigger.patterns_flat[1].eq(0xBB)
+        yield self.analyzer.trigger.patterns_flat[2].eq(0xCC)
+        yield
+
+        # Start capture and send a matching packet.
+        yield self.analyzer.capture_enable.eq(1)
+        yield
+        yield self.utmi.rx_active.eq(1)
+        yield self.utmi.rx_valid.eq(1)
+        yield self.utmi.rx_data.eq(0x10)
+        yield
+        yield
+        yield from self.advance_stream(0xAA)
+        yield from self.advance_stream(0xBB)
+        yield from self.advance_stream(0xCC)
+        yield self.utmi.rx_active.eq(0)
+        yield self.utmi.rx_valid.eq(0)
+        yield
+        yield from self.advance_cycles(3)
+
+        # Trigger should have fired exactly once and toggled output high.
+        self.assertEqual((yield self.analyzer.trigger_toggle_out), 1)
+        self.assertEqual((yield self.analyzer.trigger_fire_count), 1)
+
+
+    @usb_domain_test_case
+    def test_trigger_single_stage_mismatch(self):
+        # Configure one trigger stage:
+        # Match bytes [AA BB CC] starting at packet offset 1.
+        yield self.analyzer.trigger.enable.eq(1)
+        yield self.analyzer.trigger.armed.eq(1)
+        yield self.analyzer.trigger.output_enable.eq(1)
+        yield self.analyzer.trigger.stage_count.eq(1)
+        yield self.analyzer.trigger.stage_offsets[0].eq(1)
+        yield self.analyzer.trigger.stage_lengths[0].eq(3)
+        yield self.analyzer.trigger.patterns_flat[0].eq(0xAA)
+        yield self.analyzer.trigger.patterns_flat[1].eq(0xBB)
+        yield self.analyzer.trigger.patterns_flat[2].eq(0xCC)
+        yield
+
+        # Start capture and send a non-matching packet.
+        yield self.analyzer.capture_enable.eq(1)
+        yield
+        yield self.utmi.rx_active.eq(1)
+        yield self.utmi.rx_valid.eq(1)
+        yield self.utmi.rx_data.eq(0x10)
+        yield
+        yield
+        yield from self.advance_stream(0xAA)
+        yield from self.advance_stream(0x99)  # mismatch at second compared byte
+        yield from self.advance_stream(0xCC)
+        yield self.utmi.rx_active.eq(0)
+        yield self.utmi.rx_valid.eq(0)
+        yield
+        yield from self.advance_cycles(3)
+
+        # Trigger should not fire.
+        self.assertEqual((yield self.analyzer.trigger_toggle_out), 0)
+        self.assertEqual((yield self.analyzer.trigger_fire_count), 0)
 
 
 class USBAnalyzerStackTest(USBAnalyzerTestBase):

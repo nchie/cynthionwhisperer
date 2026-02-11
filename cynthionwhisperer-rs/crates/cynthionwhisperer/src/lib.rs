@@ -24,8 +24,7 @@ impl Cynthion {
         let devices = nusb::list_devices()
             .await
             .context("Failed to list USB devices")?;
-        let mut matches = devices
-            .filter(|info| (info.vendor_id(), info.product_id()) == VID_PID);
+        let mut matches = devices.filter(|info| (info.vendor_id(), info.product_id()) == VID_PID);
         let device_info = matches
             .next()
             .ok_or_else(|| Error::msg("No Cynthion devices found"))?;
@@ -68,6 +67,44 @@ impl Cynthion {
             stop: Some(stop),
         })
     }
+
+    pub async fn trigger_caps(&self) -> Result<crate::backend::cynthion::TriggerCaps> {
+        self.handle.trigger_caps().await
+    }
+
+    pub async fn set_trigger_control(
+        &mut self,
+        control: crate::backend::cynthion::TriggerControl,
+    ) -> Result<()> {
+        self.handle.set_trigger_control(control).await
+    }
+
+    pub async fn set_trigger_stage(
+        &mut self,
+        stage_index: u8,
+        stage: &crate::backend::cynthion::TriggerStage,
+    ) -> Result<()> {
+        self.handle.set_trigger_stage(stage_index, stage).await
+    }
+
+    pub async fn get_trigger_stage(
+        &self,
+        stage_index: u8,
+    ) -> Result<crate::backend::cynthion::TriggerStage> {
+        self.handle.get_trigger_stage(stage_index).await
+    }
+
+    pub async fn trigger_status(&self) -> Result<crate::backend::cynthion::TriggerStatus> {
+        self.handle.trigger_status().await
+    }
+
+    pub async fn arm_trigger(&mut self) -> Result<()> {
+        self.handle.arm_trigger().await
+    }
+
+    pub async fn disarm_trigger(&mut self) -> Result<()> {
+        self.handle.disarm_trigger().await
+    }
 }
 
 pub struct CaptureStream {
@@ -107,4 +144,11 @@ impl Iterator for CaptureStream {
 }
 
 pub use crate::usb::validate_packet;
-pub use crate::{event::EventType, backend::TimestampedEvent, usb::PID, usb::Speed, capture::CaptureMetadata};
+pub use crate::{
+    backend::TimestampedEvent,
+    backend::cynthion::{TriggerCaps, TriggerControl, TriggerStage, TriggerStatus},
+    capture::CaptureMetadata,
+    event::EventType,
+    usb::PID,
+    usb::Speed,
+};

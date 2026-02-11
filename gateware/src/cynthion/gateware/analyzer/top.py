@@ -796,7 +796,7 @@ class USBAnalyzerApplet(Elaboratable):
 
             # Trigger status exported to host over vendor requests.
             trigger.sequence_stage      .eq(analyzer.trigger_sequence_stage),
-            trigger.trigger_out         .eq(analyzer.trigger_toggle_out),
+            trigger.trigger_out         .eq(analyzer.trigger_output),
             trigger.fire_count          .eq(analyzer.trigger_fire_count),
 
             # Flush endpoint when analyzer is idle with capture disabled.
@@ -824,13 +824,15 @@ class USBAnalyzerApplet(Elaboratable):
             platform.request("led", 5).o  .eq(utmi.rx_error),
         ]
 
-        # Route trigger output to the dedicated interrupt pin when available.
-        if sharing != "advertising":
-            try:
-                trigger_int = platform.request("int", 0)
-                m.d.comb += trigger_int.o.eq(trigger.output_enable & analyzer.trigger_toggle_out)
-            except ResourceError:
-                pass
+        # Route trigger output to PMOD A pin 1 (user_pmod[0], bit 0) when available.
+        try:
+            trigger_pmod = platform.request("user_pmod", 0)
+            m.d.comb += [
+                trigger_pmod.oe[0].eq(1),
+                trigger_pmod.o[0].eq(trigger.output_enable & analyzer.trigger_output),
+            ]
+        except ResourceError:
+            pass
 
         # Return our elaborated module.
         return m

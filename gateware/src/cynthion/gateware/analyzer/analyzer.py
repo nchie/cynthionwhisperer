@@ -20,6 +20,8 @@ from .events import USBAnalyzerEvent
 
 TRIGGER_MAX_STAGES = 8
 TRIGGER_MAX_PATTERN_BYTES = 32
+# Trigger output pulse width in USB clock cycles (60 MHz nominal).
+TRIGGER_OUTPUT_PULSE_CYCLES = 6000
 
 
 class _DefaultTriggerConfig:
@@ -153,7 +155,7 @@ class USBAnalyzer(Elaboratable):
         self.capturing      = Signal()
         self.starting       = Signal()
 
-        self.trigger_toggle_out = Signal()
+        self.trigger_output = Signal()
         self.trigger_fire_strobe = Signal()
         self.trigger_sequence_stage = Signal(range(self.trigger.max_stages + 1))
         self.trigger_fire_count = Signal(16)
@@ -196,6 +198,7 @@ class USBAnalyzer(Elaboratable):
         pending_trigger_event = Signal()
         pending_stage_compare = Signal()
         pending_stage_byte = Signal(8)
+        trigger_output_pulse_cycles = Signal(range(TRIGGER_OUTPUT_PULSE_CYCLES + 1))
 
         active_stage_index = Signal(range(self.trigger.max_stages))
         active_stage_offset = Signal(16)
@@ -263,6 +266,7 @@ class USBAnalyzer(Elaboratable):
             ),
             stage_mismatch_effective.eq(stage_mismatch | (pending_stage_compare & pending_stage_mismatch)),
             self.trigger_sequence_stage.eq(seq_expected_stage),
+            self.trigger_output.eq(trigger_output_pulse_cycles != 0),
         ]
 
         # Use the FIFO as our stream source.
@@ -322,6 +326,8 @@ class USBAnalyzer(Elaboratable):
             current_time.eq(current_time + 1),
             self.trigger_fire_strobe.eq(0),
         ]
+        with m.If(trigger_output_pulse_cycles > 0):
+            m.d.usb += trigger_output_pulse_cycles.eq(trigger_output_pulse_cycles - 1)
 
         #
         # Core analysis FSM.
@@ -475,7 +481,7 @@ class USBAnalyzer(Elaboratable):
                                 pending_trigger_event.eq(1),
                             ]
                             with m.If(self.trigger.output_enable):
-                                m.d.usb += self.trigger_toggle_out.eq(~self.trigger_toggle_out)
+                                m.d.usb += trigger_output_pulse_cycles.eq(TRIGGER_OUTPUT_PULSE_CYCLES)
                         with m.Else():
                             m.d.usb += seq_expected_stage.eq(seq_expected_stage + 1)
 
@@ -863,9 +869,11 @@ class USBAnalyzerTest(USBAnalyzerTestBase):
         yield
         yield from self.advance_cycles(3)
 
-        # Trigger should have fired exactly once and toggled output high.
-        self.assertEqual((yield self.analyzer.trigger_toggle_out), 1)
+        # Trigger should have fired exactly once and pulsed output high.
+        self.assertEqual((yield self.analyzer.trigger_output), 1)
         self.assertEqual((yield self.analyzer.trigger_fire_count), 1)
+        yield from self.advance_cycles(TRIGGER_OUTPUT_PULSE_CYCLES + 1)
+        self.assertEqual((yield self.analyzer.trigger_output), 0)
 
 
     @usb_domain_test_case
@@ -903,7 +911,7 @@ class USBAnalyzerTest(USBAnalyzerTestBase):
         yield from self.advance_cycles(3)
 
         # Trigger should not fire.
-        self.assertEqual((yield self.analyzer.trigger_toggle_out), 0)
+        self.assertEqual((yield self.analyzer.trigger_output), 0)
         self.assertEqual((yield self.analyzer.trigger_fire_count), 0)
 
 

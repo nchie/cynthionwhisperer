@@ -5,7 +5,6 @@ Python example project that uses the `cynthionwhisperer` PyO3 extension built fr
 ## Quick start
 
 ```bash
-cd /Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-example
 ./scripts/dev_setup.sh
 source .venv/bin/activate
 cynthionwhisperer-capture --speed auto
@@ -36,7 +35,7 @@ cynthionwhisperer-capture trigger-config \
   --arm
 ```
 
-or a more complex sequence which should match the following sequence:
+or a more complex sequence which should match the following class request #9 (HID feature request):
 ![alt text](packetry-request.png)
 
 ```
@@ -120,5 +119,5 @@ cynthionwhisperer-capture target-power cycle --source target-c --delay-ms 500
 ## Notes
 
 - `scripts/dev_setup.sh` builds and installs the extension from:
-  - `/Users/andre/source/cynthion/cynthionwhisperer/cynthionwhisperer-rs/crates/cynthionwhisperer-py/Cargo.toml`
+  - `cynthionwhisperer-rs/crates/cynthionwhisperer-py/Cargo.toml`
 - `capture` mode accepts the old no-subcommand form for backward compatibility.

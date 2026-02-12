@@ -1,6 +1,6 @@
 # Standalone Cynthion Analyzer Gateware
 
-This directory contains a standalone, analyzer-only gateware package extracted from the Cynthion project.
+This directory contains a standalone, analyzer-only gateware package extracted from the Cynthion project, which has been modified to support triggers on sequences of byte-patterns.
 
 ## What is included
 
@@ -18,7 +18,6 @@ This directory contains a standalone, analyzer-only gateware package extracted f
 ## Install
 
 ```bash
-cd /Users/andre/source/cynthion/cynthionwhisperer/gateware
 pip install -e .
 ```
 

@@ -28,6 +28,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         description="Capture and trigger utilities for cynthionwhisperer"
     )
     subparsers = parser.add_subparsers(dest="command")
+    subparsers.required = True
 
     capture_parser = subparsers.add_parser(
         "capture",
@@ -156,14 +157,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Cycle off delay in milliseconds (default: 250)",
     )
 
-    # Backward compatibility: if no subcommand is given, treat as `capture`.
-    effective_argv = list(argv if argv is not None else sys.argv[1:])
-    if not effective_argv:
-        effective_argv = ["capture", *effective_argv]
-    elif effective_argv[0] not in ("-h", "--help") and effective_argv[0].startswith("-"):
-        effective_argv = ["capture", *effective_argv]
-
-    return parser.parse_args(effective_argv)
+    return parser.parse_args(argv)
 
 
 def _print_trigger_status(analyzer: cynthionwhisperer.Cynthion) -> None:

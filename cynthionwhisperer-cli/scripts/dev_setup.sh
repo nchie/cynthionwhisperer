@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-PY_APP_DIR="$ROOT_DIR/cynthionwhisperer-example"
+PY_APP_DIR="$ROOT_DIR/cynthionwhisperer-cli"
 RUST_BINDINGS_MANIFEST="$ROOT_DIR/cynthionwhisperer-rs/crates/cynthionwhisperer-py/Cargo.toml"
 
 cd "$PY_APP_DIR"

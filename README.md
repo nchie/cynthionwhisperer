@@ -12,8 +12,8 @@ This repo combines three pieces:
 
 - `cynthionwhisperer-rs`:
   Rust backend and protocol handling for Cynthion analyzer access.
-- `cynthionwhisperer-example`:
-  Python package + CLI (`cynthionwhisperer-capture`) on top of the Rust extension.
+- `cynthionwhisperer-cli`:
+  Python package + CLI (`cwcli`) on top of the Rust extension.
 - `gateware`:
   Standalone analyzer gateware tree used for trigger-related FPGA changes.
 
@@ -30,7 +30,7 @@ That said: it has worked well for the intended use case (capture + trigger + ext
 ## Where To Start
 
 - Python/CLI usage:
-  `cynthionwhisperer-example/README.md`
+  `cynthionwhisperer-cli/README.md`
 - Gateware build/flash notes:
   `gateware/README.md`
 

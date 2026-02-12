@@ -22,6 +22,27 @@ Match only incoming `DATA1` with payload starting `0x20`:
 cynthionwhisperer-capture capture --speed auto --direction in --data-pid data1 --pattern-hex 20
 ```
 
+Low-level polling API (for custom matching logic):
+
+```python
+import cynthionwhisperer
+
+c = cynthionwhisperer.Cynthion.open_first()
+cap = c.start_capture("auto")
+try:
+    while True:
+        state, item = cap.poll_next(timeout_ms=0)
+        if state == "timeout":
+            continue
+        if state == "ended":
+            break
+        if state == "event" and hasattr(item, "bytes"):
+            # item is a Packet; inspect item.bytes and item.timestamp_ns
+            pass
+finally:
+    cap.stop()
+```
+
 ## Trigger commands
 
 Configure stage 0 for a fixed-offset byte pattern, enable trigger output, and arm:

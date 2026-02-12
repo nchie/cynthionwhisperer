@@ -207,6 +207,33 @@ def _resolve_power_source_index(requested: str, sources: list[str]) -> Optional[
     return None
 
 
+_USB_PID_LOW_NIBBLE_TO_NAME = {
+    0x1: "out",
+    0x9: "in",
+    0x3: "data0",
+    0xB: "data1",
+    0x7: "data2",
+    0xF: "mdata",
+}
+
+
+def _packet_pid_name(raw_packet: bytes) -> Optional[str]:
+    if not raw_packet:
+        return None
+    pid = raw_packet[0]
+    # PID bytes are 4-bit value plus its bitwise inverse.
+    if (pid >> 4) != ((~pid) & 0x0F):
+        return None
+    return _USB_PID_LOW_NIBBLE_TO_NAME.get(pid & 0x0F)
+
+
+def _payload_from_data_packet(raw_packet: bytes) -> Optional[bytes]:
+    # Data packets are PID + payload + CRC16.
+    if len(raw_packet) < 3:
+        return None
+    return raw_packet[1:-2]
+
+
 def _cmd_capture(args: argparse.Namespace) -> int:
     try:
         pattern = _hex_bytes(args.pattern_hex, "--pattern-hex")
@@ -216,13 +243,55 @@ def _cmd_capture(args: argparse.Namespace) -> int:
 
     analyzer = cynthionwhisperer.Cynthion.open_first()
     capture = analyzer.start_capture(args.speed)
+    matched_packet = None
+    last_token_direction: Optional[str] = None
+    expected_data_pid = args.data_pid.lower() if args.data_pid else None
 
     try:
-        packet = capture.capture_until(args.direction, pattern, args.data_pid)
+        while True:
+            state, item = capture.poll_next(timeout_ms=100)
+            if state == "timeout":
+                continue
+            if state == "ended":
+                break
+            if state != "event" or item is None:
+                continue
+            if not hasattr(item, "bytes"):
+                continue
+
+            raw = item.bytes
+            pid_name = _packet_pid_name(raw)
+            if pid_name is None:
+                continue
+
+            if pid_name == "in":
+                last_token_direction = "in"
+                continue
+            if pid_name == "out":
+                last_token_direction = "out"
+                continue
+            if pid_name not in ("data0", "data1", "data2", "mdata"):
+                continue
+
+            if args.direction != "any":
+                if (
+                    last_token_direction is not None
+                    and last_token_direction != args.direction
+                ):
+                    continue
+            if expected_data_pid is not None and pid_name != expected_data_pid:
+                continue
+
+            payload = _payload_from_data_packet(raw)
+            if payload is None or not payload.startswith(pattern):
+                continue
+
+            matched_packet = item
+            break
     finally:
         capture.stop()
 
-    if packet is None:
+    if matched_packet is None:
         pid_text = args.data_pid if args.data_pid else "any DATA PID"
         print(
             f"No matching {args.direction} packet found "
@@ -230,11 +299,11 @@ def _cmd_capture(args: argparse.Namespace) -> int:
         )
         return 1
 
-    raw = packet.bytes
+    raw = matched_packet.bytes
     payload = raw[1:-2] if len(raw) >= 3 else b""
     pid_text = args.data_pid if args.data_pid else "any DATA PID"
     print(
-        f"Matched {args.direction} packet at {packet.timestamp_ns} ns "
+        f"Matched {args.direction} packet at {matched_packet.timestamp_ns} ns "
         f"(pid={pid_text}, payload_prefix={pattern.hex()})"
     )
     print(f"Payload ({len(payload)} bytes): {payload.hex()}")

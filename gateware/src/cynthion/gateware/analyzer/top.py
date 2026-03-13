@@ -62,6 +62,9 @@ TRIGGER_STAGE_PAYLOAD_LEN = 4 + TRIGGER_MAX_PATTERN_BYTES + TRIGGER_MAX_PATTERN_
 TRIGGER_CAPS_PAYLOAD_LEN = 4
 TRIGGER_STATUS_PAYLOAD_LEN = 5
 
+# Capture sync square wave on PMOD A2 and LED0: toggle every 30 seconds at 60 MHz (1 cycle per minute).
+CAPTURE_SYNC_TOGGLE_CYCLES = 1_800_000_000
+
 
 class USBAnalyzerTriggerConfig:
     """Container for trigger configuration and runtime status signals."""
@@ -778,6 +781,26 @@ class USBAnalyzerApplet(Elaboratable):
         m.submodules.analyzer = analyzer = USBAnalyzer(
             utmi, utmi.session_valid, detected_speed, event_strobe, event_code, trigger=trigger)
 
+        capture_sync_counter = Signal(range(CAPTURE_SYNC_TOGGLE_CYCLES))
+        capture_sync_signal = Signal()
+        with m.If(analyzer.starting):
+            m.d.usb += [
+                capture_sync_counter.eq(0),
+                capture_sync_signal.eq(1),
+            ]
+        with m.Elif(~analyzer.capture_enable | analyzer.stopped):
+            m.d.usb += [
+                capture_sync_counter.eq(0),
+                capture_sync_signal.eq(0),
+            ]
+        with m.Elif(capture_sync_counter == (CAPTURE_SYNC_TOGGLE_CYCLES - 1)):
+            m.d.usb += [
+                capture_sync_counter.eq(0),
+                capture_sync_signal.eq(~capture_sync_signal),
+            ]
+        with m.Else():
+            m.d.usb += capture_sync_counter.eq(capture_sync_counter + 1)
+
         # Follow this with a HyperRAM FIFO for additional buffering.
         reset_on_start = ResetInserter(analyzer.starting)
         m.submodules.psram_fifo = psram_fifo = reset_on_start(
@@ -815,7 +838,7 @@ class USBAnalyzerApplet(Elaboratable):
             usb.connect                 .eq(1),
 
             # LED indicators.
-            platform.request("led", 0).o  .eq(analyzer.capturing),
+            platform.request("led", 0).o  .eq(capture_sync_signal),
             platform.request("led", 1).o  .eq(stream_ep.stream.valid),
             platform.request("led", 2).o  .eq(analyzer.overrun),
 
@@ -824,15 +847,17 @@ class USBAnalyzerApplet(Elaboratable):
             platform.request("led", 5).o  .eq(utmi.rx_error),
         ]
 
-        # Route trigger output to PMOD A pin 1 (user_pmod[0], bit 0) when available.
+        # Route trigger output to PMOD A1 and the capture sync square wave to PMOD A2.
         try:
             trigger_pmod = platform.request("user_pmod", 0)
             m.d.comb += [
                 # user_pmod has a shared OE; drive the full bus deterministically
-                # with only PMOD A1 carrying the trigger pulse.
+                # with PMOD A1 carrying the trigger pulse and PMOD A2 carrying
+                # the slow capture sync square wave.
                 trigger_pmod.oe.eq(1),
                 trigger_pmod.o.eq(Cat(
                     trigger.output_enable & analyzer.trigger_output,
+                    capture_sync_signal,
                     C(0, 7),
                 )),
             ]

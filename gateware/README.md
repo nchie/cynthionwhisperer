@@ -44,6 +44,20 @@ python -m cynthion.gateware.analyzer.top --flash
 python -m cynthion.gateware.analyzer.top --output analyzer.bit
 ```
 
+## Debug Outputs
+
+When the analyzer is enabled, the gateware exposes a few useful status signals on
+the LEDs and PMOD A header:
+
+- `LED0`: capture sync heartbeat, blinking with a 1-minute cycle while capture is active
+- `LED1`: USB bulk stream valid
+- `LED2`: analyzer overrun indicator
+- `LED3`: UTMI `session_valid`
+- `LED4`: UTMI `rx_active`
+- `LED5`: UTMI `rx_error`
+- `PMOD A1`: trigger output pulse
+- `PMOD A2`: capture sync square wave, held low while idle, driven high at capture start, and toggled every 30 seconds for external logic-analyzer synchronization
+
 ## Notes
 
 - Platform autodetect uses Apollo (`top_level_cli` + `cynthion.gateware.APOLLO_PLATFORMS`).

@@ -27,6 +27,11 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Capture and trigger utilities for cynthionwhisperer"
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable library status logging",
+    )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.required = True
 
@@ -502,6 +507,7 @@ def _cmd_target_power(args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = _parse_args()
+    cynthionwhisperer.set_verbose(args.verbose)
 
     if args.command == "capture":
         return _cmd_capture(args)

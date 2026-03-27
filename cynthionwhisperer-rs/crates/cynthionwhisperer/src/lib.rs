@@ -8,12 +8,23 @@ pub mod usb;
 pub mod util;
 
 use anyhow::{Context, Error};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::backend::cynthion::{CynthionDevice, CynthionHandle, VID_PID};
 use crate::backend::{BackendHandle, BackendStop, EventIterator, EventPoll, EventResult};
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_verbose(enabled: bool) {
+    VERBOSE.store(enabled, Ordering::Relaxed);
+}
+
+pub(crate) fn verbose_enabled() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
 
 pub struct Cynthion {
     handle: CynthionHandle,

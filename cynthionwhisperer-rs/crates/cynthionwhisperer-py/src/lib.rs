@@ -277,12 +277,19 @@ struct Event {
     event_type: String,
 }
 
+#[pyfunction]
+#[pyo3(signature = (enabled=true))]
+fn set_verbose(enabled: bool) {
+    cw::set_verbose(enabled);
+}
+
 #[pymodule]
 fn cynthionwhisperer(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Cynthion>()?;
     m.add_class::<Capture>()?;
     m.add_class::<Packet>()?;
     m.add_class::<Event>()?;
+    m.add_function(wrap_pyfunction!(set_verbose, m)?)?;
     Ok(())
 }
 

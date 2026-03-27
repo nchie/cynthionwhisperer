@@ -241,7 +241,9 @@ pub trait BackendHandle: Send + Sync {
 
         // Begin capture and set up transfer queue.
         let mut transfer_queue = self.begin_capture(speed, data_tx).await?;
-        println!("Capture enabled, speed: {}", speed.description());
+        if crate::verbose_enabled() {
+            println!("Capture enabled, speed: {}", speed.description());
+        }
 
         // Spawn a worker thread to process the transfer queue until stopped.
         let queue_worker = spawn(move || block_on(transfer_queue.process(reuse_rx, queue_stop_rx)));
@@ -253,11 +255,12 @@ pub trait BackendHandle: Send + Sync {
         // End capture.
         let end_capture_result = self.end_capture().await;
         if end_capture_result.is_ok() {
-            println!("Capture disabled");
-
+            if crate::verbose_enabled() {
+                println!("Capture disabled");
+            }
             // Leave queue worker running briefly to receive flushed data.
             async_sleep(Duration::from_millis(100)).await;
-        } else {
+        } else if crate::verbose_enabled() {
             println!("Disabling capture failed");
         }
 
@@ -279,7 +282,9 @@ pub trait BackendHandle: Send + Sync {
 impl BackendStop {
     /// Stop the capture associated with this handle.
     pub fn stop(self) -> Result<(), Error> {
-        println!("Requesting capture stop");
+        if crate::verbose_enabled() {
+            println!("Requesting capture stop");
+        }
         // Signal the capture thread to stop, then join it. If sending fails,
         // assume the thread is already stopping.
         let _ = self.stop_tx.send(());

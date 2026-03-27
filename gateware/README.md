@@ -56,7 +56,7 @@ the LEDs and PMOD A header:
 - `LED4`: UTMI `rx_active`
 - `LED5`: UTMI `rx_error`
 - `PMOD A1`: trigger output pulse
-- `PMOD A2`: capture sync square wave, held low while idle, driven high at capture start, and toggled every 30 seconds for external logic-analyzer synchronization
+- `PMOD A2`: capture sync square wave, held low while idle, driven high on the exact capture-start event, and toggled every 30 seconds for external logic-analyzer synchronization
 
 ## Notes
 

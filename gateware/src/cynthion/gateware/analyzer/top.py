@@ -783,7 +783,7 @@ class USBAnalyzerApplet(Elaboratable):
 
         capture_sync_counter = Signal(range(CAPTURE_SYNC_TOGGLE_CYCLES))
         capture_sync_signal = Signal()
-        with m.If(analyzer.starting):
+        with m.If(analyzer.capture_start_strobe):
             m.d.usb += [
                 capture_sync_counter.eq(0),
                 capture_sync_signal.eq(1),

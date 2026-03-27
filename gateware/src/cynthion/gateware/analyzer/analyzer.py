@@ -92,6 +92,8 @@ class USBAnalyzer(Elaboratable):
         Asserted iff the analyzer is currently capturing a packet.
     starting: Signal(), output
         Asserted iff the analyzer is starting capture on this cycle.
+    capture_start_strobe: Signal(), output
+        Asserted iff the analyzer is emitting the capture-start event on this cycle.
 
 
     Parameters
@@ -154,6 +156,7 @@ class USBAnalyzer(Elaboratable):
         self.overrun        = Signal()
         self.capturing      = Signal()
         self.starting       = Signal()
+        self.capture_start_strobe = Signal()
 
         self.trigger_output = Signal()
         self.trigger_fire_strobe = Signal()
@@ -339,6 +342,11 @@ class USBAnalyzer(Elaboratable):
                 self.overrun   .eq(f.ongoing("OVERRUN")),
                 self.capturing .eq(f.ongoing("CAPTURE_PACKET")),
                 self.starting  .eq(self.stopped & self.capture_enable),
+                self.capture_start_strobe.eq(
+                    f.ongoing("AWAIT_START") &
+                    self.capture_enable &
+                    ~self.utmi.rx_active
+                ),
             ]
 
             # AWAIT_START: wait for capture to be enabled, but don't start mid-packet.
